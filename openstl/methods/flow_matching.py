@@ -27,6 +27,10 @@ import os.path as osp
 from typing import Literal, Optional
 
 from openstl.methods.base_method import Base_method
+
+# Constants for Flow Matching (from Li & He, 2026, Section 4.3)
+TIME_MIN_EPSILON = 1e-3  # Minimum time to avoid numerical instability
+TIME_MAX_OFFSET = 0.05   # Offset from t=1 for stable training with x-prediction
 from openstl.models import SPADEJvM_Model
 from openstl.utils import print_log, check_dir
 from openstl.core import metric
@@ -239,7 +243,7 @@ class FlowMatching(Base_method):
             t = torch.randn(B, device=device)
             t = t * self._logit_normal_scale + self._logit_normal_loc
             t = torch.sigmoid(t)
-            t = torch.clamp(t, min=1e-3, max=1.0 - 0.05)
+            t = torch.clamp(t, min=TIME_MIN_EPSILON, max=1.0 - TIME_MAX_OFFSET)
             t, x_t, v_target = self.fm.sample_location_and_conditional_flow(x_0, batch_y, t=t)
         else:
             t, x_t, v_target = self.fm.sample_location_and_conditional_flow(x_0, batch_y, t=None)
