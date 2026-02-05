@@ -1,0 +1,134 @@
+# SPADEJvM Training on Raw Data (no precomputed latents)
+# Uses JvMWeatherDataModule with WeatherCuboidDataset
+
+seed_everything: 42
+
+trainer:
+  max_epochs: 100
+  accelerator: gpu
+  devices: -1
+  precision: 16-mixed
+  gradient_clip_val: 1.0
+  log_every_n_steps: 10
+  val_check_interval: 1.0
+  
+  callbacks:
+    - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+      init_args:
+        monitor: val/loss
+        mode: min
+        save_top_k: 3
+        filename: "epoch={epoch}-val_loss={val/loss:.4f}"
+        save_last: true
+    
+    - class_path: lightning.pytorch.callbacks.LearningRateMonitor
+      init_args:
+        logging_interval: step
+    
+    - class_path: lightning.pytorch.callbacks.EarlyStopping
+      init_args:
+        monitor: val/loss
+        patience: 15
+        mode: min
+  
+  logger:
+    class_path: lightning.pytorch.loggers.TensorBoardLogger
+    init_args:
+      save_dir: experiments/duaod_final
+      name: spadeCFM_patches/small
+      default_hp_metric: false
+
+data:
+  class_path: datasets.jvm_weather_datamodule.JvMWeatherDataModule
+  init_args:
+    # Data paths
+    cams_dir: data/phase2/processed/1_cams_chunks
+    era5_dir: data/phase2/processed/2_met_chunks
+    dataset_type: cuboid
+    
+    # Temporal config
+    lagged_aod: 8       # T_in (past frames)
+    lagged_met: 8       # T_in (must match lagged_aod for cuboid)
+    forecast_horizon: 24  # T_out (future frames)
+    
+    # Splitting (year-based)
+    train_years: [2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012, 2013, 2014, 2015, 2016, 2020, 2021, 2022]
+    val_years: [2017, 2018]
+    test_years: [2019, 2023, 2024]
+    
+    # Dataloader
+    batch_size: 16
+    num_workers: 4
+    pin_memory: true
+    
+    # Model padding (for divisibility by 2^n_s)
+    n_s: 2  # Must match patch_size in model
+    
+    # JvM-specific
+    c_aod: 1  # Number of AOD channels
+
+model:
+  class_path: models.jvm.lightning_module_jvm.SPADEJvMLightningModule
+  init_args:
+    # Data dimensions (raw space, not latent space)
+    in_channels: 27     # Raw MET channels for SPADE conditioning
+    latent_channels: 1  # AOD channels to predict
+    t_in: 8             # Must match lagged_aod
+    t_out: 24           # Must match forecast_horizon
+
+    # Context Encoder (ContextCNN) - Disabled since we encode via ViT
+    use_encoder: true
+    cond_encoder_hidden_dim: 128  # ContextCNN hidden dimension
+    cond_encoder_depth: 4        # ContextCNN number of layers
+    cond_dropout: 0.1            # ContextCNN dropout
+    
+    # Model architecture
+    model_dim: 256
+    cond_channels: 64   # Encoder output channels
+    time_dim: 512
+    num_blocks: 12
+    patch_size: [2, 8, 8]  # (T, H, W)
+    bottleneck_dim: 128
+    d_state: 64
+    d_conv: 4
+    expand: 2
+    dropout: 0.1
+    
+    
+    # Training
+    learning_rate: 2.0e-4
+    weight_decay: 1.0e-5
+    sigma_min: 0.0
+    loss_type: "v"  # "v" for v-loss (best), "x" for x-loss
+    prediction_mode: "v" # Predict v (velocity) for CFM
+
+    # Classifier-Free Guidance (CFG)
+    cfg_dropout_prob: 0.1  # 10% chance to drop condition during training
+    guidance_scale: 1.0  # No guidance during training (will be overridden at test time)
+    
+    # CFM sampling config
+    sample_t_distrib: "logit_normal"  # "uniform" or "logit_normal"
+    logit_normal_loc: -0.5
+    logit_normal_scale: 1.0
+    use_ot_sampling: true
+    ot_method: "exact"
+    ot_reg: 0.05
+    
+    # Inference
+    num_inference_steps: 50
+    ode_solver: "dopri5"  # "dopri5", "rk4", "euler"
+    test_method: "full"
+    test_num_ensemble: 5
+    test_threshold: 0.13
+    
+    # Visualization
+    visualization_params:
+      - [50, "dopri5"]
+      - [100, "rk4"]
+
+    viz_sample_noise: [null, 0.1, 0.5]
+    
+    # Logging
+    enable_logging: true
+
+ckpt_path: experiments/duaod_final/spadeCFM_patches/small/version_0/checkpoints/epoch=11-val_loss=0.0092.ckpt
