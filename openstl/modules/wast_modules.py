@@ -7,7 +7,7 @@ from timm.layers import DropPath, activations
 from timm.models._efficientnet_blocks import SqueezeExcite, InvertedResidual
 
 # version adaptation for PyTorch > 1.7.1
-IS_HIGH_VERSION = tuple(map(lambda x: int(float(x)), torch.__version__.split('+')[0].split('.')[0:3])) > (1, 7, 1)
+IS_HIGH_VERSION = True
 if IS_HIGH_VERSION:
     import torch.fft
 

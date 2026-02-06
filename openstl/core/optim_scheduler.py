@@ -1,22 +1,45 @@
 import json
 from torch import optim
 
-from timm.optim.adafactor import Adafactor
-from timm.optim.adahessian import Adahessian
-from timm.optim.adamp import AdamP
-from timm.optim.lookahead import Lookahead
-from timm.optim.nadam import Nadam
-from timm.optim.nvnovograd import NvNovoGrad
-from timm.optim.radam import RAdam
-from timm.optim.rmsprop_tf import RMSpropTF
-from timm.optim.sgdp import SGDP
+# --- SECTION 1 : Les Optimiseurs "Exotiques" (Restent chez Timm) ---
+# On utilise un try/except pour gérer les différences de structure entre Timm <1.0 et Timm >1.0
+try:
+    # Pour Timm récent (v0.9.x, v1.0+)
+    from timm.optim import (
+        Adafactor, 
+        Adahessian, 
+        AdamP, 
+        Lookahead, 
+        NvNovoGrad, 
+        RMSpropTF, 
+        SGDP
+    )
+except ImportError:
+    # Pour Timm ancien (v0.6.x) - Fallback
+    from timm.optim.adafactor import Adafactor
+    from timm.optim.adahessian import Adahessian
+    from timm.optim.adamp import AdamP
+    from timm.optim.lookahead import Lookahead
+    from timm.optim.nvnovograd import NvNovoGrad
+    from timm.optim.rmsprop_tf import RMSpropTF
+    from timm.optim.sgdp import SGDP
 
+# --- SECTION 2 : Les Optimiseurs Migrés (Passent chez PyTorch) ---
+# Nadam et RAdam sont maintenant natifs dans PyTorch.
+# On utilise "as" pour garder le même nom de classe que dans ton code original.
+from torch.optim import NAdam as Nadam
+from torch.optim import RAdam
+
+# --- SECTION 3 : Les Schedulers (Restent chez Timm) ---
+# Timm a ses propres implémentations de scheduler très populaires.
 from timm.scheduler.cosine_lr import CosineLRScheduler
 from timm.scheduler.multistep_lr import MultiStepLRScheduler
 from timm.scheduler.step_lr import StepLRScheduler
 from timm.scheduler.tanh_lr import TanhLRScheduler
 
 from .optim_constant import optim_parameters
+
+# ... Le reste de ton code ne change pas ...
 
 
 timm_schedulers = [
