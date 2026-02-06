@@ -23,7 +23,7 @@
 
 [📘Documentation](https://openstl.readthedocs.io/en/latest/) |
 [🛠️Installation](docs/en/install.md) |
-[🚀Model Zoo](docs/en/model_zoos/video_benchmarks.md) |
+[🐋Docker/HPC Setup](docs/en/DOCKER_README.md) |[🐍Mamba Specs](docs/en/MAMBA_SPECS.md) |[�🚀Model Zoo](docs/en/model_zoos/video_benchmarks.md) |
 [🤗Huggingface](https://huggingface.co/OpenSTL) |
 [👀Visualization](docs/en/visualization/video_visualization.md) |
 [🆕News](docs/en/changelog.md)

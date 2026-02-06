@@ -2,12 +2,62 @@
 
 ## Install the project
 
-This project has provided an environment setting file of conda, users can easily reproduce the environment by the following commands:
-```shell
-git clone https://github.com/chengtan9907/OpenSTL
+### Option 1: Install with Docker (Recommended)
+
+0. Prerequisites: This containers works only on Linux with NVIDIA GPU and NVIDIA drivers installed. It needs CUDA 12.8 or higher and NVIDIA Container Toolkit. Please refer to [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) for installation instructions.
+
+1. Download the pre-build image from [Docker Hub](https://hub.docker.com/r/dorianhgn/openstl-mamba) or build your own image with the provided `Dockerfile` ([🐋Docker Setup](docs/en/DOCKER_README.md)).
+
+    ```bash
+    docker pull dorianhgn/openstl-mamba:latest
+    ```
+
+2. Run the container with the following command:
+
+    ```bash
+    git clone https://github.com/Dorianhgn/OpenSTL.git
+    cd OpenSTL
+    docker run -it --rm \
+        --gpus all \
+        -v $HOME/OpenSTL:/workspace \
+        -w /workspace \
+        dorianhgn/openstl-mamba:latest
+    ```
+
+3. Install OpenSTL in dev mode inside the container:
+
+    ```bash
+    python setup.py develop  # or `pip install -e .`
+    ```
+
+### Option 2: Install with venv
+
+This project has provided an environment setting file, users can easily reproduce the environment by the following commands:
+```bash
+git clone https://github.com/Dorianhgn/OpenSTL.git
 cd OpenSTL
-conda env create -f environment.yml
-conda activate OpenSTL
+python3.10 -m venv openstl_env
+source openstl_env/bin/activate
+pip install torch torchvision
+```
+
+Then install causal-conv1d and mamba-ssm:
+
+```bash
+pip install causal-conv1d==1.4.0
+pip install mamba-ssm==2.2.0
+``` 
+
+Then all the dependencies can be installed by:
+
+```bash
+pip install -r requirements/runtime.txt
+pip install -r requirements/jvm.txt
+```
+
+Finally, install OpenSTL in dev mode:
+
+```bash
 python setup.py develop  # or `pip install -e .`
 ```
 
@@ -36,9 +86,9 @@ python setup.py develop  # or `pip install -e .`
 * numpy
 * opencv-python
 * packaging
-* pandas
+* pandas==2.2.1
 * python<=3.10.8
-* scikit-image
+* scikit-image<=0.19.3
 * scikit-learn
 * torch
 * timm

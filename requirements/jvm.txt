@@ -1,0 +1,16 @@
+lightning==2.2.1
+# jsonargparse[signatures]
+# timm
+# jupyter
+# seaborn
+pandas==2.2.1
+# mamba-ssm==2.2.0
+# causal-conv1d==1.4.0
+transformers==4.40.0
+accelerate
+diffusers
+properscoring
+torch-ema
+torchcfm>=1.0.0
+torchdiffeq>=0.2.3
+einops>=0.7.0
