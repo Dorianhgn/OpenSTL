@@ -664,17 +664,6 @@ class SPADEJvM_Model(nn.Module):
             bottleneck_dim=bottleneck_dim,
         )
         
-        # Condition encoder (if using SPADE)
-        if self.use_spade:
-            # Simple projection to cond_channels
-            self.cond_encoder = nn.Sequential(
-                nn.Conv2d(in_channels * pre_seq_length, cond_channels, 3, padding=1),
-                nn.SiLU(),
-                nn.Conv2d(cond_channels, cond_channels, 3, padding=1),
-            )
-        else:
-            self.cond_encoder = None
-        
         # SPADEJvM blocks
         self.blocks = nn.ModuleList([
             SPADEJvMBlock(
@@ -702,16 +691,21 @@ class SPADEJvM_Model(nn.Module):
     def forward(
         self,
         x_t: torch.Tensor,
-        cond: torch.Tensor,
         t: torch.Tensor,
+        cond_spatial: Optional[torch.Tensor] = None,
+        x_past: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
         Forward pass for Flow Matching.
         
         Args:
             x_t: Noisy input at time t (B, T_out, C, H, W)
-            cond: Condition/history frames (B, T_in, C, H, W)
             t: Time (B,) in [0, 1]
+            cond_spatial: Processed spatial condition (B, Cond_C, H, W) for SPADE.
+                         Required if use_spade=True, ignored if use_spade=False.
+            x_past: Clean past frames (B, T_in, C, H, W), optional.
+                    - If use_spade=True: concatenated with x_t on time dim
+                    - If use_spade=False: concatenated before x_t (TODO: [cond, x_past, x_t])
             
         Returns:
             Predicted clean image (B, T_out, C, H, W)
@@ -721,17 +715,16 @@ class SPADEJvM_Model(nn.Module):
         # Time embedding
         t_emb = self.time_emb(t)
         
-        # Process condition for SPADE
-        if self.use_spade and self.cond_encoder is not None:
-            # Flatten temporal dimension into channels
-            cond_flat = rearrange(cond, 'b t c h w -> b (t c) h w')
-            cond_spatial = self.cond_encoder(cond_flat)  # (B, cond_channels, H, W)
-        else:
-            cond_spatial = None
+        # Validate SPADE condition
+        if self.use_spade and cond_spatial is None:
+            raise ValueError(
+                "use_spade=True requires cond_spatial. "
+                "Either provide cond_spatial or set use_spade=False."
+            )
         
-        # Concatenate condition with input if not using SPADE
-        if not self.use_spade:
-            x_input = torch.cat([cond, x_t], dim=1)
+        # Concatenate past frames with noisy input on time dimension
+        if x_past is not None:
+            x_input = torch.cat([x_past, x_t], dim=1)  # (B, T_in + T_out, C, H, W)
         else:
             x_input = x_t
         
@@ -748,20 +741,22 @@ class SPADEJvM_Model(nn.Module):
         # Unpatchify to output
         x_pred = self.unpatchify(x, t_emb, grid_size)
         
-        # Extract only the output portion if condition was concatenated
-        if not self.use_spade:
-            x_pred = x_pred[:, self.pre_seq_length:, :, :, :]
+        # Extract only the future portion if past was concatenated
+        if x_past is not None:
+            T_in = x_past.shape[1]
+            x_pred = x_pred[:, T_in:, :, :, :]
         
         return x_pred
     
     def predict_x_from_xt(
         self,
         x_t: torch.Tensor,
-        cond: torch.Tensor,
         t: torch.Tensor,
+        cond: Optional[torch.Tensor] = None,
+        x_past: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Alias for forward() - compatibility with JvM interface."""
-        return self.forward(x_t, cond, t)
+        return self.forward(x_t, t, cond=cond, x_past=x_past)
     
     def compute_v_from_x_pred(
         self,

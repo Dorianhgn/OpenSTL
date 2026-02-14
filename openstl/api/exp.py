@@ -108,6 +108,12 @@ class BaseExperiment(object):
         T, C, H, W = args.in_shape
         if args.method in ['simvp', 'tau', 'mmvp', 'wast']:
             input_dummy = torch.ones(1, args.pre_seq_length, C, H, W).to(device)
+        elif args.method in ['flowmatching', 'flow_matching']:
+            # FlowMatching model: forward(x_t, t, cond=None, x_past=None)
+            # cond and x_past are optional, so we only need x_t and t
+            x_t = torch.ones(1, args.aft_seq_length, C, H, W).to(device)
+            t = torch.ones(1).to(device) * 0.5
+            input_dummy = (x_t, t)
         elif args.method == 'phydnet':
             _tmp_input1 = torch.ones(1, args.pre_seq_length, C, H, W).to(device)
             _tmp_input2 = torch.ones(1, args.aft_seq_length, C, H, W).to(device)
@@ -134,8 +140,15 @@ class BaseExperiment(object):
 
         dash_line = '-' * 80 + '\n'
         info = self.method.model.__repr__()
-        flops = FlopCountAnalysis(self.method.model.to(device), input_dummy)
-        flops = flop_count_table(flops)
+        
+        # Try to compute FLOPs, but handle failures gracefully (e.g., for models with custom kernels)
+        try:
+            flops = FlopCountAnalysis(self.method.model.to(device), input_dummy)
+            flops = flop_count_table(flops)
+        except Exception as e:
+            flops = f"FLOPs counting not supported for {args.method}: {type(e).__name__}\n"
+            print(f"Warning: Could not compute FLOPs for {args.method}: {e}")
+        
         if args.fps:
             fps = measure_throughput(self.method.model.to(device), input_dummy)
             fps = 'Throughputs of {}: {:.3f}\n'.format(args.method, fps)

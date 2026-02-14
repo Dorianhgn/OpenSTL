@@ -125,6 +125,25 @@ use_spade = True  # Ablation: Set to False for concatenation
 cond_channels = 10
 
 # ==============================================================================
+# Context Encoder (Optional)
+# ==============================================================================
+
+# Whether to use a context encoder (for complex multi-variable conditions)
+# - False: Direct conditioning (for simple datasets like Moving MNIST)
+# - True: Use context encoder (for complex datasets like weather, AOD)
+use_encoder = False  # Set to True for complex datasets
+
+# Context encoder type (only used if use_encoder=True)
+context_encoder_type = 'ContextNet'
+
+# Context encoder parameters (only used if use_encoder=True)
+context_encoder_params = {
+    'hidden_dim': 128,      # Internal network width
+    'num_layers': 3,        # Number of residual blocks
+    'dropout': 0.0,         # Dropout rate
+}
+
+# ==============================================================================
 # Positional Encoding (Ablation: RoPE)
 # ==============================================================================
 
@@ -135,6 +154,15 @@ use_rope = True  # Ablation: Set to False to disable
 # ==============================================================================
 # Training Configuration
 # ==============================================================================
+
+# Learning rate
+lr = 1e-3
+
+# Batch size
+batch_size = 16
+
+# Number of epochs
+epoch = 200
 
 # Dropout
 drop = 0.0

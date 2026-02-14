@@ -31,7 +31,7 @@ from openstl.methods.base_method import Base_method
 # Constants for Flow Matching (from Li & He, 2026, Section 4.3)
 TIME_MIN_EPSILON = 1e-3  # Minimum time to avoid numerical instability
 TIME_MAX_OFFSET = 0.05   # Offset from t=1 for stable training with x-prediction
-from openstl.models import SPADEJvM_Model
+from openstl.models import SPADEJvM_Model, build_context_encoder
 from openstl.utils import print_log, check_dir
 from openstl.core import metric
 
@@ -161,6 +161,27 @@ class FlowMatching(Base_method):
         else:
             self.ot_sampler = None
         
+        # Context Encoder (optional, instantiated after parent init so we have hparams)
+        self.context_encoder = None
+        if args.get('use_encoder', False):
+            encoder_type = args.get('context_encoder_type', 'ContextNet')
+            encoder_params = args.get('context_encoder_params', {})
+            
+            # Get dataset info from hparams
+            in_channels = args.get('in_channels', args.get('in_shape', (10, 1, 64, 64))[1])
+            pre_seq_length = args.get('pre_seq_length', 10)
+            cond_channels = args.get('cond_channels', 10)
+            
+            # Build context encoder
+            self.context_encoder = build_context_encoder(
+                encoder_type=encoder_type,
+                in_channels=in_channels,
+                t_in=pre_seq_length,
+                out_channels=cond_channels,
+                **encoder_params
+            )
+            print(f"Initialized {encoder_type} context encoder with params: {encoder_params}")
+        
         # Time endpoint for sampling
         self.t_end = 1.0 - 1e-3 if prediction_mode == "x" else 1.0
         
@@ -212,6 +233,65 @@ class FlowMatching(Base_method):
         """
         return self.sample(batch_x, target_shape=batch_y.shape if batch_y is not None else None)
     
+    def _prepare_model_inputs(self, x_t, t, batch_x, apply_cond_dropout=False):
+        """
+        Prepare inputs for the SPADEJvM model.
+        
+        Logic:
+        - x_past: Always batch_x (clean past frames)
+        - cond_spatial: 
+            * If use_encoder=True: batch_x → ContextNet → cond_spatial
+            * If use_encoder=False and use_spade=True: batch_x flattened → cond_spatial
+            * If use_spade=False: cond_spatial=None (concatenation mode)
+        
+        Args:
+            x_t: Noisy future frames (B, T_out, C, H, W)
+            t: Time steps (B,)
+            batch_x: Past frames (B, T_in, C, H, W)
+            apply_cond_dropout: Whether to apply CFG dropout
+            
+        Returns:
+            Dict with keys: x_t, t, x_past, cond_spatial
+        """
+        B = x_t.shape[0]
+        device = x_t.device
+        
+        x_past = batch_x
+        cond_spatial = None
+        
+        # Prepare SPADE condition if use_spade=True
+        use_spade = self.hparams.get('use_spade', True)
+        if use_spade:
+            if self.context_encoder is not None:
+                # Use ContextNet: (B, T, C, H, W) → (B, cond_channels, H, W)
+                cond_spatial = self.context_encoder(batch_x)
+            else:
+                # Fallback: flatten temporal dimension into channels
+                # (B, T, C, H, W) → (B, T*C, H, W)
+                from einops import rearrange
+                cond_spatial = rearrange(batch_x, 'b t c h w -> b (t c) h w')
+        
+        # Classifier-Free Guidance: randomly drop conditioning
+        if apply_cond_dropout and self._cond_dropout_prob > 0:
+            drop_mask = torch.rand(B, device=device) < self._cond_dropout_prob
+            # Drop both x_past and cond_spatial
+            x_past = x_past * (~drop_mask).view(B, 1, 1, 1, 1).float()
+            if cond_spatial is not None:
+                cond_spatial = cond_spatial * (~drop_mask).view(B, 1, 1, 1).float()
+        
+        return {"x_t": x_t, "t": t, "x_past": x_past, "cond_spatial": cond_spatial}
+    
+    def _call_model(self, x_t, t, x_past=None, cond_spatial=None):
+        """Call model with the correct signature (x_t, t, cond_spatial, x_past)."""
+        return self.model(x_t, t, cond_spatial=cond_spatial, x_past=x_past)
+    
+    def _call_model_from_inputs(self, model_inputs):
+        """Call model using prepared inputs dict from _prepare_model_inputs."""
+        return self._call_model(
+            model_inputs["x_t"], model_inputs["t"],
+            x_past=model_inputs["x_past"], cond_spatial=model_inputs["cond_spatial"]
+        )
+    
     def training_step(self, batch, batch_idx):
         """
         Training step with Flow Matching.
@@ -220,6 +300,10 @@ class FlowMatching(Base_method):
         - Model predicts x (clean image) directly
         - Loss can be computed in velocity space (v-loss) or pixel space (x-loss)
         - v-loss provides implicit time-dependent weighting
+        
+        In OpenSTL, batch_x = past frames, batch_y = future frames.
+        Past frames are always passed as x_past (concatenated in time dim).
+        SPADE spatial condition is derived from x_past inside the model.
         """
         batch_x, batch_y = batch  # (B, T_in, C, H, W), (B, T_out, C, H, W)
         B = batch_y.shape[0]
@@ -232,12 +316,6 @@ class FlowMatching(Base_method):
         if self._use_ot_sampling and self.ot_sampler is not None:
             x_0, _ = self.ot_sampler.sample_plan(x_0, batch_y)
         
-        # Classifier-Free Guidance: randomly drop condition
-        cond = batch_x.clone()
-        if self._cond_dropout_prob > 0:
-            drop_mask = torch.rand(B, device=device) < self._cond_dropout_prob
-            cond = cond * (~drop_mask).view(B, 1, 1, 1, 1).float()
-        
         # Sample time and interpolate
         if self._sample_t_distrib == "logit_normal":
             t = torch.randn(B, device=device)
@@ -248,21 +326,24 @@ class FlowMatching(Base_method):
         else:
             t, x_t, v_target = self.fm.sample_location_and_conditional_flow(x_0, batch_y, t=None)
         
+        # Prepare model inputs (centralizes x_past / cond logic + CFG dropout)
+        model_inputs = self._prepare_model_inputs(x_t, t, batch_x, apply_cond_dropout=True)
+        
         # Model prediction
         if self._prediction_mode == "x":
             # Predict clean image directly (JvM)
-            x_pred = self.model(x_t, cond, t)
+            x_pred = self._call_model_from_inputs(model_inputs)
             # Derive velocity from x prediction
             v_pred = self.model.compute_v_from_x_pred(x_pred, x_t, t)
         elif self._prediction_mode == "v":
             # Predict velocity directly (CFM)
-            v_pred = self.model(x_t, cond, t)
+            v_pred = self._call_model_from_inputs(model_inputs)
             # Derive x from v prediction
             t_view = t.view(B, 1, 1, 1, 1)
             x_pred = x_t + v_pred * (1 - t_view)
         else:  # epsilon
             # Predict noise (diffusion-style)
-            eps_pred = self.model(x_t, cond, t)
+            eps_pred = self._call_model_from_inputs(model_inputs)
             # Convert to x and v
             t_view = t.view(B, 1, 1, 1, 1)
             x_pred = (x_t - (1 - t_view) * eps_pred) / t_view.clamp(min=1e-5)
@@ -290,21 +371,23 @@ class FlowMatching(Base_method):
         """Validation step using training logic."""
         batch_x, batch_y = batch
         B = batch_y.shape[0]
-        device = batch_y.device
         
         # Sample and compute loss
         x_0 = torch.randn_like(batch_y)
         t, x_t, v_target = self.fm.sample_location_and_conditional_flow(x_0, batch_y, t=None)
         
+        # Prepare model inputs (no CFG dropout during validation)
+        model_inputs = self._prepare_model_inputs(x_t, t, batch_x, apply_cond_dropout=False)
+        
         if self._prediction_mode == "x":
-            x_pred = self.model(x_t, batch_x, t)
+            x_pred = self._call_model_from_inputs(model_inputs)
             v_pred = self.model.compute_v_from_x_pred(x_pred, x_t, t)
         elif self._prediction_mode == "v":
-            v_pred = self.model(x_t, batch_x, t)
+            v_pred = self._call_model_from_inputs(model_inputs)
             t_view = t.view(B, 1, 1, 1, 1)
             x_pred = x_t + v_pred * (1 - t_view)
         else:
-            eps_pred = self.model(x_t, batch_x, t)
+            eps_pred = self._call_model_from_inputs(model_inputs)
             t_view = t.view(B, 1, 1, 1, 1)
             x_pred = (x_t - (1 - t_view) * eps_pred) / t_view.clamp(min=1e-5)
             v_pred = self.model.compute_v_from_x_pred(x_pred, x_t, t)
@@ -333,22 +416,25 @@ class FlowMatching(Base_method):
     
     def sample(
         self,
-        cond: torch.Tensor,
+        x_past: torch.Tensor,
         target_shape: Optional[tuple] = None,
         num_steps: Optional[int] = None,
         solver: Optional[str] = None,
         guidance_scale: Optional[float] = None,
+        cond_spatial: Optional[torch.Tensor] = None,
         return_trajectory: bool = False,
     ) -> torch.Tensor:
         """
         Sample from the model using ODE integration.
         
         Args:
-            cond: Condition sequence (B, T_in, C, H, W)
+            x_past: Past frames (B, T_in, C, H, W) - temporal context
             target_shape: Target output shape (B, T_out, C, H, W)
             num_steps: Number of ODE steps
             solver: ODE solver ('dopri5', 'rk4', 'euler', 'midpoint')
             guidance_scale: Override guidance scale
+            cond_spatial: External spatial condition (B, Cond_C, H, W), optional.
+                         If None, will be computed from x_past if use_spade=True.
             return_trajectory: Return full ODE trajectory
             
         Returns:
@@ -361,21 +447,35 @@ class FlowMatching(Base_method):
         if guidance_scale is None:
             guidance_scale = self._guidance_scale
         
-        B = cond.shape[0]
-        device = cond.device
+        B = x_past.shape[0]
+        device = x_past.device
         
         # Determine output shape
         if target_shape is not None:
             _, T_out, C, H, W = target_shape
         else:
-            T_out = self.hparams.get('aft_seq_length', self.hparams.get('pre_seq_length', cond.shape[1]))
-            C, H, W = cond.shape[2], cond.shape[3], cond.shape[4]
+            T_out = self.hparams.get('aft_seq_length', self.hparams.get('pre_seq_length', x_past.shape[1]))
+            C, H, W = x_past.shape[2], x_past.shape[3], x_past.shape[4]
         
         # Initial noise
         z0 = torch.randn(B, T_out, C, H, W, device=device, dtype=torch.float32)
         
-        # Convert condition to FP32
-        cond_fp32 = cond.to(dtype=torch.float32)
+        # Convert past to FP32
+        x_past_fp32 = x_past.to(dtype=torch.float32)
+        
+        # Prepare SPADE condition if not provided
+        if cond_spatial is None:
+            use_spade = self.hparams.get('use_spade', True)
+            if use_spade:
+                if self.context_encoder is not None:
+                    cond_spatial = self.context_encoder(x_past_fp32)
+                else:
+                    # Fallback: flatten temporal dimension
+                    from einops import rearrange
+                    cond_spatial = rearrange(x_past_fp32, 'b t c h w -> b (t c) h w')
+        
+        # Convert to FP32
+        cond_spatial_fp32 = cond_spatial.to(dtype=torch.float32) if cond_spatial is not None else None
         
         # ODE function
         def ode_func(t_scalar, x):
@@ -384,27 +484,28 @@ class FlowMatching(Base_method):
             
             # Conditional prediction
             if self._prediction_mode == "x":
-                x_pred = self.model(x, cond_fp32, t_batch)
+                x_pred = self._call_model(x, t_batch, x_past=x_past_fp32, cond_spatial=cond_spatial_fp32)
                 v_cond = self.model.compute_v_from_x_pred(x_pred, x, t_batch)
             elif self._prediction_mode == "v":
-                v_cond = self.model(x, cond_fp32, t_batch)
+                v_cond = self._call_model(x, t_batch, x_past=x_past_fp32, cond_spatial=cond_spatial_fp32)
             else:  # epsilon
-                eps_pred = self.model(x, cond_fp32, t_batch)
+                eps_pred = self._call_model(x, t_batch, x_past=x_past_fp32, cond_spatial=cond_spatial_fp32)
                 t_view = t_batch.view(B, 1, 1, 1, 1)
                 x_pred = (x - (1 - t_view) * eps_pred) / t_view.clamp(min=1e-5)
                 v_cond = self.model.compute_v_from_x_pred(x_pred, x, t_batch)
             
             # Classifier-Free Guidance
             if guidance_scale != 1.0:
-                cond_uncond = torch.zeros_like(cond_fp32)
+                # Unconditional: zero out past frames and condition
+                x_past_uncond = torch.zeros_like(x_past_fp32)
                 
                 if self._prediction_mode == "x":
-                    x_pred_uncond = self.model(x, cond_uncond, t_batch)
+                    x_pred_uncond = self._call_model(x, t_batch, x_past=x_past_uncond, cond_spatial=None)
                     v_uncond = self.model.compute_v_from_x_pred(x_pred_uncond, x, t_batch)
                 elif self._prediction_mode == "v":
-                    v_uncond = self.model(x, cond_uncond, t_batch)
+                    v_uncond = self._call_model(x, t_batch, x_past=x_past_uncond, cond_spatial=None)
                 else:
-                    eps_pred_uncond = self.model(x, cond_uncond, t_batch)
+                    eps_pred_uncond = self._call_model(x, t_batch, x_past=x_past_uncond, cond_spatial=None)
                     t_view = t_batch.view(B, 1, 1, 1, 1)
                     x_pred_uncond = (x - (1 - t_view) * eps_pred_uncond) / t_view.clamp(min=1e-5)
                     v_uncond = self.model.compute_v_from_x_pred(x_pred_uncond, x, t_batch)
