@@ -33,7 +33,7 @@ TIME_MIN_EPSILON = 1e-3  # Minimum time to avoid numerical instability
 TIME_MAX_OFFSET = 0.05   # Offset from t=1 for stable training with x-prediction
 from openstl.models import SPADEJvM_Model, build_context_encoder
 from openstl.utils import print_log, check_dir
-from openstl.core import metric
+from openstl.core import metric, per_frame_metric
 
 # Optional dependencies with graceful fallback
 try:
@@ -541,23 +541,53 @@ class FlowMatching(Base_method):
         for k in self.test_outputs[0].keys():
             results_all[k] = np.concatenate([batch[k] for batch in self.test_outputs], axis=0)
         
+        threshold = self.hparams.get('metric_threshold', None)
+
+        # Global metrics
         eval_res, eval_log = metric(
             results_all['preds'], results_all['trues'],
             self.hparams.test_mean, self.hparams.test_std,
             metrics=self.metric_list,
             channel_names=self.channel_names,
             spatial_norm=self.spatial_norm,
-            threshold=self.hparams.get('metric_threshold', None)
+            threshold=threshold
         )
         
-        results_all['metrics'] = np.array([eval_res['mae'], eval_res['mse']])
+        # Per-frame metrics
+        pf_res = per_frame_metric(
+            results_all['preds'], results_all['trues'],
+            mean=self.hparams.test_mean, std=self.hparams.test_std,
+            metrics=self.metric_list, spatial_norm=self.spatial_norm,
+            threshold=threshold)
+
+        # Build comprehensive metrics dict
+        results_all['metrics'] = eval_res
+        results_all['per_frame_metrics'] = pf_res
+
+        # Add summary SSIM at start/mid/end if available
+        if 'ssim' in pf_res:
+            ssim_pf = pf_res['ssim']
+            T = len(ssim_pf)
+            eval_res['ssim_start'] = float(ssim_pf[0])
+            eval_res['ssim_mid'] = float(ssim_pf[T // 2])
+            eval_res['ssim_end'] = float(ssim_pf[-1])
+            eval_log += f", ssim_start:{ssim_pf[0]}, ssim_mid:{ssim_pf[T // 2]}, ssim_end:{ssim_pf[-1]}"
 
         if self.trainer.is_global_zero:
             print_log(eval_log)
             folder_path = check_dir(osp.join(self.hparams.save_dir, 'saved'))
 
-            for np_data in ['metrics', 'inputs', 'trues', 'preds']:
+            # Save raw arrays
+            for np_data in ['inputs', 'trues', 'preds']:
                 np.save(osp.join(folder_path, np_data + '.npy'), results_all[np_data])
+
+            # Save global metrics dict
+            np.save(osp.join(folder_path, 'metrics.npy'), eval_res)
+
+            # Save per-frame metrics dict
+            np.save(osp.join(folder_path, 'per_frame_metrics.npy'), pf_res)
+
+            print_log(f"Saved test results to {folder_path}")
         
         # Clear test outputs
         self.test_outputs = []

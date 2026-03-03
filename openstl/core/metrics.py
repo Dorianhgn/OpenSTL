@@ -247,7 +247,7 @@ def metric(pred, true, mean=None, std=None, metrics=['mae', 'mse'],
         for b in range(pred.shape[0]):
             for f in range(pred.shape[1]):
                 ssim += cal_ssim(pred[b, f].swapaxes(0, 2),
-                                 true[b, f].swapaxes(0, 2), multichannel=True)
+                                 true[b, f].swapaxes(0, 2), channel_axis=-1)
         eval_res['ssim'] = ssim / (pred.shape[0] * pred.shape[1])
 
     if 'psnr' in metrics:
@@ -280,3 +280,122 @@ def metric(pred, true, mean=None, std=None, metrics=['mae', 'mse'],
             eval_log += eval_str
 
     return eval_res, eval_log
+
+
+def per_frame_metric(pred, true, mean=None, std=None, metrics=['mae', 'mse', 'ssim', 'psnr'],
+                     clip_range=[0, 1], spatial_norm=False, threshold=None):
+    """Compute metrics per frame/timestep, with mean and std across samples.
+
+    Args:
+        pred (np.ndarray): Predictions of shape (N, T, C, H, W).
+        true (np.ndarray): Ground truth of shape (N, T, C, H, W).
+        mean (np.ndarray): Mean for denormalization.
+        std (np.ndarray): Std for denormalization.
+        metrics (list): List of metrics to compute.
+        clip_range (list): Clip range for SSIM/PSNR.
+        spatial_norm (bool): Whether to normalize spatially.
+        threshold (float | None): Threshold for detection metrics (POD, FAR, CSI).
+            If None, detection metrics are skipped even if requested.
+
+    Returns:
+        dict: Per-frame results with keys:
+            - ``{metric}``:     np.ndarray of shape (T,) — mean across N samples
+            - ``{metric}_std``: np.ndarray of shape (T,) — std  across N samples
+            Detection metrics (pod/sucr/csi/far) only have mean (no meaningful per-sample std).
+    """
+    if mean is not None and std is not None:
+        pred = pred * std + mean
+        true = true * std + mean
+
+    N, T, C, H, W = pred.shape
+    norm = (H * W * C) if spatial_norm else 1
+    results = {}
+
+    # Filter out threshold-dependent metrics if threshold is None
+    threshold_metrics = {'pod', 'sucr', 'csi', 'far'}
+    active_metrics = [m for m in metrics
+                      if m not in threshold_metrics or threshold is not None]
+
+    # --- pixel-space metrics: compute (N,) per frame then derive mean + std ---
+
+    if 'mse' in active_metrics:
+        means, stds = np.zeros(T), np.zeros(T)
+        for t in range(T):
+            # per-sample MSE: mean over (C,H,W) then sum channels → shape (N,)
+            per_n = np.mean((pred[:, t] - true[:, t]) ** 2, axis=(-2, -1)).sum(axis=-1) / norm
+            means[t], stds[t] = per_n.mean(), per_n.std()
+        results['mse'] = means
+        results['mse_std'] = stds
+
+    if 'mae' in active_metrics:
+        means, stds = np.zeros(T), np.zeros(T)
+        for t in range(T):
+            per_n = np.mean(np.abs(pred[:, t] - true[:, t]), axis=(-2, -1)).sum(axis=-1) / norm
+            means[t], stds[t] = per_n.mean(), per_n.std()
+        results['mae'] = means
+        results['mae_std'] = stds
+
+    if 'rmse' in active_metrics:
+        means, stds = np.zeros(T), np.zeros(T)
+        for t in range(T):
+            per_n = np.sqrt(
+                np.mean((pred[:, t] - true[:, t]) ** 2, axis=(-2, -1)).sum(axis=-1) / norm
+            )
+            # per_n is a scalar here if N dim was kept; re-expand:
+            per_n = np.array([
+                np.sqrt(np.mean((pred[b, t] - true[b, t]) ** 2) / norm * (H * W))
+                for b in range(N)
+            ])
+            means[t], stds[t] = per_n.mean(), per_n.std()
+        results['rmse'] = means
+        results['rmse_std'] = stds
+
+    # --- Detection metrics per frame (no per-sample std, aggregated over spatial) ---
+    if threshold is not None and 'pod' in metrics:
+        pod_vals, sucr_vals, csi_vals, far_vals = (np.zeros(T) for _ in range(4))
+        for t in range(T):
+            hits_t, fas_t, misses_t = sevir_metrics(
+                pred[:, t:t+1], true[:, t:t+1], threshold)
+            pod_vals[t] = POD(hits_t, misses_t)
+            sucr_vals[t] = SUCR(hits_t, fas_t)
+            csi_vals[t] = CSI(hits_t, fas_t, misses_t)
+            far_vals[t] = 1.0 - SUCR(hits_t, fas_t)  # FAR = 1 - SUCR
+        results['pod'] = pod_vals
+        results['sucr'] = sucr_vals
+        results['csi'] = csi_vals
+        results['far'] = far_vals
+
+    # --- perceptual metrics: collect per-sample then mean + std ---
+
+    # Clip for SSIM/PSNR/SNR
+    pred_clipped = np.clip(pred, clip_range[0], clip_range[1])
+
+    if 'ssim' in active_metrics:
+        means, stds = np.zeros(T), np.zeros(T)
+        for t in range(T):
+            per_n = np.array([
+                cal_ssim(pred_clipped[b, t].swapaxes(0, 2),
+                         true[b, t].swapaxes(0, 2), channel_axis=-1)
+                for b in range(N)
+            ])
+            means[t], stds[t] = per_n.mean(), per_n.std()
+        results['ssim'] = means
+        results['ssim_std'] = stds
+
+    if 'psnr' in active_metrics:
+        means, stds = np.zeros(T), np.zeros(T)
+        for t in range(T):
+            per_n = np.array([PSNR(pred_clipped[b, t], true[b, t]) for b in range(N)])
+            means[t], stds[t] = per_n.mean(), per_n.std()
+        results['psnr'] = means
+        results['psnr_std'] = stds
+
+    if 'snr' in active_metrics:
+        means, stds = np.zeros(T), np.zeros(T)
+        for t in range(T):
+            per_n = np.array([SNR(pred_clipped[b, t], true[b, t]) for b in range(N)])
+            means[t], stds[t] = per_n.mean(), per_n.std()
+        results['snr'] = means
+        results['snr_std'] = stds
+
+    return results

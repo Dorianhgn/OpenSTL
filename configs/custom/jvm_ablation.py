@@ -1,4 +1,4 @@
-# MambaFlow Ablation Configuration for OpenSTL
+# Just Video Mamba Ablation Configuration for OpenSTL
 # Template config for running ablation studies on Flow Matching methods
 #
 # This config demonstrates how to switch between different ablation settings:
