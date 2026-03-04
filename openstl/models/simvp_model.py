@@ -3,7 +3,8 @@ from torch import nn
 
 from openstl.modules import (ConvSC, ConvNeXtSubBlock, ConvMixerSubBlock, GASubBlock, gInception_ST,
                              HorNetSubBlock, MLPMixerSubBlock, MogaSubBlock, PoolFormerSubBlock,
-                             SwinSubBlock, UniformerSubBlock, VANSubBlock, ViTSubBlock, TAUSubBlock)
+                             SwinSubBlock, UniformerSubBlock, VANSubBlock, ViTSubBlock, TAUSubBlock,
+                             MidSTVMamba)
 
 
 class SimVP_Model(nn.Module):
@@ -27,6 +28,17 @@ class SimVP_Model(nn.Module):
         model_type = 'gsta' if model_type is None else model_type.lower()
         if model_type == 'incepu':
             self.hid = MidIncepNet(T*hid_S, hid_T, N_T)
+        elif model_type == 'stvmamba':
+            self.hid = MidSTVMamba(
+                channel_in=hid_S,
+                hid_c1=kwargs.get('hid_c1', 128),
+                hid_c2=kwargs.get('hid_c2', 128),
+                n_t1=kwargs.get('n_t1', 1),
+                n_t2=kwargs.get('n_t2', 2),
+                d_state=kwargs.get('d_state', 16),
+                drop_path_rate=drop_path,
+                layer_scale_init=kwargs.get('layer_scale_init', 1e-4),
+            )
         else:
             self.hid = MidMetaNet(T*hid_S, hid_T, N_T,
                 input_resolution=(H, W), model_type=model_type,

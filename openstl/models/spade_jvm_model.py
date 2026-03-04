@@ -395,6 +395,55 @@ class SPADEAdaLNModulation(nn.Module):
 
 
 # ==============================================================================
+# 3D RoPE (from Kandinsky)
+# ==============================================================================
+
+def get_freqs(dim: int, max_period: float = 10000.0) -> torch.Tensor:
+    freqs = torch.exp(-math.log(max_period) * torch.arange(start=0, end=dim, dtype=torch.float32) / dim)
+    return freqs
+
+def apply_rotary(x: torch.Tensor, rope: torch.Tensor) -> torch.Tensor:
+    # x:    (B, L, num_heads, head_dim)
+    # rope: (L, 1, head_dim//2, 2, 2)  -- 2x2 rotation matrix per frequency
+    x_ = x.reshape(*x.shape[:-1], -1, 1, 2)  # (B, L, num_heads, head_dim//2, 1, 2)
+    rope = rope.unsqueeze(0)                  # (1, L, 1,         head_dim//2, 2, 2)
+    x_out = (rope * x_).sum(dim=-1)           # (B, L, num_heads, head_dim//2, 2)
+    return x_out.reshape(*x.shape).type_as(x)
+
+class RoPE3D(nn.Module):
+    def __init__(self, axes_dims: Tuple[int, int, int], max_pos: Tuple[int, int, int] = (128, 128, 128), max_period: float = 10000.0):
+        super().__init__()
+        self.axes_dims = axes_dims
+        self.max_pos = max_pos
+        self.max_period = max_period
+
+        for i, (axes_dim, ax_max_pos) in enumerate(zip(axes_dims, max_pos)):
+            freq = get_freqs(axes_dim // 2, max_period)
+            pos = torch.arange(ax_max_pos, dtype=freq.dtype)
+            self.register_buffer(f"args_{i}", torch.outer(pos, freq), persistent=False)
+
+    def forward(self, shape: Tuple[int, int, int], pos: Tuple[torch.Tensor, torch.Tensor, torch.Tensor], scale_factor: Tuple[float, float, float] = (1.0, 1.0, 1.0)):
+        duration, height, width = shape
+        args_t = getattr(self, "args_0")[pos[0]] / scale_factor[0]
+        args_h = getattr(self, "args_1")[pos[1]] / scale_factor[1]
+        args_w = getattr(self, "args_2")[pos[2]] / scale_factor[2]
+
+        args = torch.cat([
+            args_t.view(duration, 1, 1, -1).repeat(1, height, width, 1),
+            args_h.view(1, height, 1, -1).repeat(duration, 1, width, 1),
+            args_w.view(1, 1, width, -1).repeat(duration, height, 1, 1),
+        ], dim=-1)
+        cosine = torch.cos(args)
+        sine = torch.sin(args)
+        rope = torch.stack([cosine, -sine, sine, cosine], dim=-1)  # (T, H, W, head_dim//2, 4)
+        rope = rope.view(*rope.shape[:-1], 2, 2)                     # (T, H, W, head_dim//2, 2, 2)
+        # flatten (T, H, W) and add head broadcast dim
+        rope = rope.reshape(-1, rope.shape[-3], 2, 2)                # (T*H*W, head_dim//2, 2, 2)
+        rope = rope.unsqueeze(1)                                     # (T*H*W, 1, head_dim//2, 2, 2)
+        return rope
+
+
+# ==============================================================================
 # Alternative Backbone Blocks for Ablation
 # ==============================================================================
 
@@ -418,24 +467,73 @@ class ConvBlock(nn.Module):
 
 
 class AttentionBlock(nn.Module):
-    """Self-attention backbone block (for ablation: block_type='attention')."""
+    """Self-attention backbone block with RoPE3D and RMSNorm on Q/K (like Kandinsky)."""
     
-    def __init__(self, dim: int, num_heads: int = 8, dropout: float = 0.0):
+    def __init__(self, dim: int, num_heads: int = 8, dropout: float = 0.0, use_rope: bool = True):
         super().__init__()
+        self.dim = dim
+        self.num_heads = num_heads
+        self.head_dim = dim // num_heads
+        
         self.norm = nn.LayerNorm(dim)
-        self.attn = nn.MultiheadAttention(dim, num_heads, dropout=dropout, batch_first=True)
+        
+        self.to_query = nn.Linear(dim, dim, bias=True)
+        self.to_key = nn.Linear(dim, dim, bias=True)
+        self.to_value = nn.Linear(dim, dim, bias=True)
+        
+        # Kandinsky-style QK RMSNorm for improved stability
+        self.query_norm = nn.RMSNorm(self.head_dim)
+        self.key_norm = nn.RMSNorm(self.head_dim)
+        
+        self.use_rope = use_rope
+        if self.use_rope:
+            # Distribute head_dim across T, H, W (e.g. 1/3 each roughly, must be even)
+            # Example heuristic: T gets 32%, H gets 34%, W gets 34%
+            d_t = 2 * (int(self.head_dim * 0.33) // 2)
+            d_h = 2 * (int(self.head_dim * 0.33) // 2)
+            d_w = self.head_dim - (d_t + d_h)
+            self.rope3d = RoPE3D(axes_dims=(d_t, d_h, d_w))
+            
+        self.out_layer = nn.Linear(dim, dim, bias=True)
+        self.dropout = dropout
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Args: x (B, T, C, H, W). Returns: (B, T, C, H, W)."""
         B, T, C, H, W = x.shape
         
-        # Flatten spatial + temporal for attention
         x_flat = rearrange(x, 'b t c h w -> b (t h w) c')
         x_norm = self.norm(x_flat)
         
-        attn_out, _ = self.attn(x_norm, x_norm, x_norm)
+        q = self.to_query(x_norm).view(B, -1, self.num_heads, self.head_dim)
+        k = self.to_key(x_norm).view(B, -1, self.num_heads, self.head_dim)
+        v = self.to_value(x_norm).view(B, -1, self.num_heads, self.head_dim)
         
-        x_out = rearrange(attn_out, 'b (t h w) c -> b t c h w', t=T, h=H, w=W)
+        # Apply RMSNorm to Q and K
+        q = self.query_norm(q.float()).type_as(q)
+        k = self.key_norm(k.float()).type_as(k)
+        
+        if self.use_rope:
+            device = x.device
+            pos = (
+                torch.arange(T, device=device),
+                torch.arange(H, device=device),
+                torch.arange(W, device=device)
+            )
+            # rope shape: (T*H*W, 1, head_dim//2, 2)
+            rope = self.rope3d(shape=(T, H, W), pos=pos).to(device)
+            q = apply_rotary(q, rope)
+            k = apply_rotary(k, rope)
+            
+        # Reshape for multi-head attention (B, num_heads, L, head_dim)
+        q = rearrange(q, 'b l h d -> b h l d')
+        k = rearrange(k, 'b l h d -> b h l d')
+        v = rearrange(v, 'b l h d -> b h l d')
+        
+        attn_out = F.scaled_dot_product_attention(q, k, v, dropout_p=self.dropout if self.training else 0.0)
+        attn_out = rearrange(attn_out, 'b h l d -> b l (h d)')
+        
+        x_out = self.out_layer(attn_out)
+        x_out = rearrange(x_out, 'b (t h w) c -> b t c h w', t=T, h=H, w=W)
         return x_out
 
 
@@ -487,6 +585,7 @@ class SPADEJvMBlock(nn.Module):
         expand: int = 2,
         num_heads: int = 8,
         dropout: float = 0.0,
+        use_rope: bool = True,
     ):
         super().__init__()
         self.dim = dim
@@ -504,7 +603,7 @@ class SPADEJvMBlock(nn.Module):
         if block_type == "mamba":
             self.backbone = MambaBlock(dim, d_state, d_conv, expand)
         elif block_type == "attention":
-            self.backbone = AttentionBlock(dim, num_heads, dropout)
+            self.backbone = AttentionBlock(dim, num_heads, dropout, use_rope=use_rope)
         elif block_type == "conv":
             self.backbone = ConvBlock(dim)
         else:
@@ -676,6 +775,7 @@ class SPADEJvM_Model(nn.Module):
                 expand=expand,
                 num_heads=num_heads,
                 dropout=dropout,
+                use_rope=self.use_rope,
             )
             for _ in range(num_blocks)
         ])

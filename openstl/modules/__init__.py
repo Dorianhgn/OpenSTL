@@ -15,7 +15,7 @@ from .simvp_modules import (BasicConv2d, ConvSC, GroupConv2d,
 from .mmvp_modules import (ResBlock, RRDB, ResidualDenseBlock_4C, Up, Conv3D, ConvLayer,
                            MatrixPredictor3DConv, SimpleMatrixPredictor3DConv_direct, PredictModel) 
 from .swinlstm_modules import UpSample, DownSample, STconvert
-from .stvmamba_modules import STDSConv, STSS, SwiGLU, STVMambaModule, MAMBA_AVAILABLE
+from .stvmamba_modules import STDSConv, STSS, SwiGLU, STVMambaModule, MidSTVMamba, MAMBA_AVAILABLE
 
 __all__ = [
     'ConvLSTMCell', 'CausalLSTMCell', 'GHU', 'SpatioTemporalLSTMCell', 'SpatioTemporalLSTMCellv2',
@@ -28,5 +28,5 @@ __all__ = [
     'ResBlock', 'RRDB', 'ResidualDenseBlock_4C', 'Up', 'Conv3D', 'ConvLayer',
     'MatrixPredictor3DConv', 'SimpleMatrixPredictor3DConv_direct', 'PredictModel',
     'UpSample', 'DownSample', 'STconvert',
-    'STDSConv', 'STSS', 'SwiGLU', 'STVMambaModule', 'MAMBA_AVAILABLE'
+    'STDSConv', 'STSS', 'SwiGLU', 'STVMambaModule', 'MidSTVMamba', 'MAMBA_AVAILABLE'
 ]

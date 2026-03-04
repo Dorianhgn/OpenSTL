@@ -56,9 +56,9 @@ Goal: Prove that multiplicative SPADE conditioning is superior to standard chann
 *   [ ] Adapt `jvm_weather_datamodule.py` and `weather_cuboid.py` from `temp/` into `openstl/datasets/` and register them in OpenSTL's data pipeline.
 
 ### 2. Implement Missing Modules
-*   [ ] **SimVP + STVMamba Integration:** Create the STVMamba block wrapper for the SimVP method. Ensure the SimVP hidden dimensions and Mamba `headdim` comply with the **Rule of 8** (e.g., if SimVP uses `hid_S=256`, `expand=2`, `headdim=64` -> 8 heads, which is valid).
-*   [ ] **RoPE3D Implementation:** The ablation config marks `use_rope = True` as a placeholder. Need to implement true rotary embeddings for the 3D grid in `spade_jvm_model.py` (for both Attention and Mamba backbones).
-*   [ ] **Finish `openstl/modules/stvmamba_modules.py`:** Ensure the forward passes for `STSS`, `SwiGLU`, and `STVMambaModule` are complete and bug-free (some lines look truncated or WIP).
+*   [x] **SimVP + STVMamba Integration:** Create the STVMamba block wrapper for the SimVP method. Ensure the SimVP hidden dimensions and Mamba `headdim` comply with the **Rule of 8** (e.g., if SimVP uses `hid_S=256`, `expand=2`, `headdim=64` -> 8 heads, which is valid).
+*   [x] **RoPE3D Implementation:** The ablation config marks `use_rope = True` as a placeholder. Need to implement true rotary embeddings for the 3D grid in `spade_jvm_model.py` (for both Attention and Mamba backbones).
+*   [x] **Finish `openstl/modules/stvmamba_modules.py`:** Ensure the forward passes for `STSS`, `SwiGLU`, and `STVMambaModule` are complete and bug-free (some lines look truncated or WIP).
 
 ### 3. Setup Experiment Scripts
 *   [ ] Create standard bash scripts (or slurm jobs) mapped to the variations in `configs/custom/jvm_ablation.py` to launch the runs systematically.
