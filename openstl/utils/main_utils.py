@@ -138,12 +138,22 @@ def load_config(filename:str = None):
     return config
 
 
-def update_config(args, config, exclude_keys=list()):
-    """update the args dict with a new config"""
+def update_config(args, config, exclude_keys=list(), default_args=None):
+    """update args dict with values from config.
+
+    CLI args only overwrite config values when they differ from parser defaults,
+    i.e., they were explicitly provided by the user.
+    """
     assert isinstance(args, dict) and isinstance(config, dict)
     for k in config.keys():
-        if args.get(k, False):
-            if args[k] != config[k] and k not in exclude_keys and args[k] is not None:
+        # A CLI value is considered explicit only if it differs from parser defaults.
+        cli_explicit = (
+            k in args
+            and args[k] is not None
+            and (default_args is None or args[k] != default_args.get(k))
+        )
+        if cli_explicit:
+            if args[k] != config[k] and k not in exclude_keys:
                 print(f'overwrite config key -- {k}: {config[k]} -> {args[k]}')
             else:
                 args[k] = config[k]

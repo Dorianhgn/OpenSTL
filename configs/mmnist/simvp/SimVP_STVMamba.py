@@ -31,4 +31,11 @@ layer_scale_init = 1e-4
 lr         = 1e-3
 batch_size = 16
 drop_path  = 0.02
-sched      = 'onecycle'
+sched = 'cosine'
+warmup_epoch = 0
+
+epoch=50
+
+fp16 = True
+opt = 'adamw'
+weight_decay = 1.0e-4

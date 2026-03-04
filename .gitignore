@@ -145,3 +145,7 @@ my_wheels/
 plots/
 
 temp/aod_prediction_project/scripts
+draft/
+
+# SLURM jobs logs
+logs/

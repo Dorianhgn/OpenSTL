@@ -10,5 +10,12 @@ N_S = 4
 # training
 lr = 1e-3
 batch_size = 16
-drop_path = 0
-sched = 'onecycle'
+drop_path = 0.02
+sched = 'cosine'
+warmup_epoch = 0
+
+epoch=50
+
+fp16 = True
+opt = 'adamw'
+weight_decay = 1.0e-4

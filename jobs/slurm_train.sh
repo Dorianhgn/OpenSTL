@@ -23,7 +23,7 @@ echo "Submitting job $SLURM_JOB_ID in container..."
 CONTAINER_IMAGE="docker://dorianhgn/openstl-mamba:latest"  
 WORKSPACE_DIR="$HOME/OpenSTL"
 DATASET="mmnist"                                    # Dataset name (e.g., mmnist, etc.)
-CONFIG_FILE="configs/custom/mambaflow_ablation.py"
+CONFIG_FILE="configs/mmnist/simvp_gsta.py"
 EXPERIMENT_NAME="mmnist_simvp_gsta"
 
 # Créer le répertoire de logs s'il n'existe pas
@@ -49,7 +49,7 @@ srun \
     pip install -e .
 
     # 2) Start training
-    python tools/train.py -d $DATASET --lr 1e-3 -c $CONFIG_FILE --ex_name $EXPERIMENT_NAME
+    python tools/train.py -d $DATASET -c $CONFIG_FILE --ex_name $EXPERIMENT_NAME
 
 
     echo "--- Training finished ---"
