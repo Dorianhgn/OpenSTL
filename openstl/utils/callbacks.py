@@ -1,6 +1,7 @@
 import json
 import shutil
 import logging
+import os
 import os.path as osp
 from lightning.pytorch.callbacks import Callback, ModelCheckpoint
 from .main_utils import check_dir, collect_env, print_log, output_namespace
@@ -17,6 +18,12 @@ class SetupCallback(Callback):
         self.config = args.__dict__
         self.argv_content = argv_content
         self.method_info = method_info
+
+    def _save_config_file(self, save_dir):
+        """Copy the .py config file into save_dir as config.py."""
+        config_file = self.config.get('config_file', None)
+        if config_file and osp.isfile(config_file):
+            shutil.copy(config_file, osp.join(save_dir, 'config.py'))
 
     def on_fit_start(self, trainer, pl_module):
         env_info_dict = collect_env()
@@ -38,11 +45,25 @@ class SetupCallback(Callback):
             sv_param = osp.join(self.save_dir, 'model_param.json')
             with open(sv_param, 'w') as file_obj:
                 json.dump(self.config, file_obj)
+            # save config .py
+            self._save_config_file(self.save_dir)
 
             print_log(output_namespace(self.args))
             if self.method_info is not None:
                 info, flops, fps, dash_line = self.method_info
                 print_log('Model info:\n' + info+'\n' + flops+'\n' + fps + dash_line)
+
+    def on_test_start(self, trainer, pl_module):
+        if trainer.global_rank == 0:
+            self.save_dir = check_dir(self.save_dir)
+            # setup log (separate test log file)
+            for handler in logging.root.handlers[:]:
+                logging.root.removeHandler(handler)
+            logging.basicConfig(level=logging.INFO,
+                filename=osp.join(self.save_dir, '{}_{}.log'.format(self.prefix, self.setup_time)),
+                filemode='a', format='%(asctime)s - %(message)s')
+            # save config .py (useful when re-running test with tweaked config)
+            self._save_config_file(self.save_dir)
 
 
 class EpochEndCallback(Callback):

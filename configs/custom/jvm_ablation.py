@@ -54,10 +54,10 @@ sigma_min = 0.0
 # Time sampling distribution
 # - 'uniform': Standard uniform sampling
 # - 'logit_normal': Logit-normal (emphasizes middle timesteps)
-sample_t_distrib = 'uniform'  # Ablation: Change to 'logit_normal'
+sample_t_distrib = 'logit_normal'  # Ablation: Change to 'logit_normal'
 
 # Logit-normal parameters (only used if sample_t_distrib='logit_normal')
-logit_normal_loc = 0.0
+logit_normal_loc = -0.5
 logit_normal_scale = 1.0
 
 # ==============================================================================
@@ -65,7 +65,7 @@ logit_normal_scale = 1.0
 # ==============================================================================
 
 # Whether to use OT sampling for better trajectories
-use_ot_sampling = False  # Ablation: Set to True for OT sampling
+use_ot_sampling = True  # Ablation: Set to True for OT sampling
 
 # OT method: 'exact' or 'sinkhorn'
 ot_method = 'exact'
@@ -89,7 +89,7 @@ guidance_scale = 1.0  # Ablation: Increase to 2.0-7.0 for stronger guidance
 # - 'mamba': STVMamba (STSS + STDSConv) - efficient for long sequences
 # - 'attention': Self-attention - standard transformer approach
 # - 'conv': Convolutional - lightweight baseline
-block_type = 'mamba'  # Ablation: Change to 'attention' or 'conv'
+block_type = 'attention'  # Ablation: Change to 'attention' or 'conv'
 
 # Model dimensions
 model_dim = 256  # Hidden dimension

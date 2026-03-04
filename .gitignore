@@ -141,3 +141,7 @@ configs/kinetics/simvp
 configs/bair/simvp
 
 my_wheels/
+
+plots/
+
+temp/aod_prediction_project/scripts

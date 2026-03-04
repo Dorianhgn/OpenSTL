@@ -39,11 +39,15 @@ class BaseExperiment(object):
         self.trainer = self._init_trainer(self.args, callbacks, strategy)
 
     def _init_trainer(self, args, callbacks, strategy):
-        return Trainer(devices=args.gpus,  # Use these GPUs
-                       max_epochs=args.epoch,  # Maximum number of epochs to train for
-                       strategy=strategy,   # 'ddp', 'deepspeed_stage_2', 'ddp_find_unused_parameters_false'
-                       accelerator='gpu',  # Use distributed data parallel
-                       callbacks=callbacks
+        limit_test = getattr(args, 'limit_test_batches', 1.0)
+        fast_dev_run = getattr(args, 'fast_dev_run', 0)
+        return Trainer(devices=args.gpus,
+                       max_epochs=args.epoch,
+                       strategy=strategy,
+                       accelerator='gpu',
+                       callbacks=callbacks,
+                       limit_test_batches=limit_test,
+                       fast_dev_run=fast_dev_run if fast_dev_run > 0 else False,
                     )
 
     def _load_callbacks(self, args, save_dir, ckpt_dir):

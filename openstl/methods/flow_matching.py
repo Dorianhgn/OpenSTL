@@ -372,6 +372,9 @@ class FlowMatching(Base_method):
         batch_x, batch_y = batch
         B = batch_y.shape[0]
         
+        if batch_idx == 0:
+            self._eval_sample_batch = (batch_x[:4].detach().clone(), batch_y[:4].detach().clone())
+            
         # Sample and compute loss
         x_0 = torch.randn_like(batch_y)
         t, x_t, v_target = self.fm.sample_location_and_conditional_flow(x_0, batch_y, t=None)
@@ -399,18 +402,94 @@ class FlowMatching(Base_method):
         self.log('val_loss', loss, on_step=True, on_epoch=True, prog_bar=False)
         return loss
     
+    def on_validation_epoch_end(self):
+        """Compute epoch-level metrics for validation with ODE sampling."""
+        if not hasattr(self, '_eval_sample_batch'):
+            return
+            
+        batch_x, batch_y = self._eval_sample_batch
+        
+        try:
+            with torch.no_grad():
+                # Force n_ens=1 for validation fast sampling
+                x_samples = self.sample(batch_x, target_shape=batch_y.shape)
+                
+                # Compute Sample MSE & MAE directly
+                sample_mse = nn.functional.mse_loss(x_samples, batch_y).item()
+                sample_mae = nn.functional.l1_loss(x_samples, batch_y).item()
+                self.log("val/sample_mse", sample_mse, sync_dist=True)
+                self.log("val/sample_mae", sample_mae, sync_dist=True)
+                self.log("val/sample_crps", sample_mae, sync_dist=True)  # Equal to MAE for n_ens=1
+                
+                preds = x_samples.cpu().numpy()
+                trues = batch_y.cpu().numpy()
+                
+                # Full metrics
+                threshold = self.hparams.get('metric_threshold', None)
+                eval_res, _ = metric(
+                    preds, trues,
+                    self.hparams.test_mean, self.hparams.test_std,
+                    metrics=self.metric_list,
+                    channel_names=self.channel_names,
+                    spatial_norm=self.spatial_norm,
+                    threshold=threshold
+                )
+                
+                pf_res = per_frame_metric(
+                    preds, trues,
+                    mean=self.hparams.test_mean, std=self.hparams.test_std,
+                    metrics=self.metric_list, spatial_norm=self.spatial_norm,
+                    threshold=threshold
+                )
+                
+                if 'ssim' in pf_res:
+                    ssim_pf = pf_res['ssim']
+                    T = len(ssim_pf)
+                    ssim_mean = np.mean(ssim_pf)
+                    self.log("val/sample_ssim", float(ssim_mean), sync_dist=True, prog_bar=True)
+                    self.log("val/sample_ssim_start", float(ssim_pf[0]), sync_dist=True)
+                    self.log("val/sample_ssim_mid", float(ssim_pf[T // 2]), sync_dist=True)
+                    self.log("val/sample_ssim_end", float(ssim_pf[-1]), sync_dist=True)
+                
+                # Other deterministic metrics
+                if 'pod' in eval_res: self.log("val/sample_pod", eval_res['pod'], sync_dist=True)
+                if 'far' in eval_res: self.log("val/sample_far", eval_res['far'], sync_dist=True)
+                if 'csi' in eval_res: self.log("val/sample_csi", eval_res['csi'], sync_dist=True)
+
+        finally:
+            if hasattr(self, '_eval_sample_batch'):
+                del self._eval_sample_batch
+
     def test_step(self, batch, batch_idx):
         """Test step with ODE sampling."""
         batch_x, batch_y = batch
         
-        # Sample using ODE
-        pred_y = self.sample(batch_x, target_shape=batch_y.shape)
+        n_ens = self.hparams.get('test_num_ensemble', 1)
         
-        outputs = {
-            'inputs': batch_x.cpu().numpy(),
-            'preds': pred_y.cpu().numpy(),
-            'trues': batch_y.cpu().numpy()
-        }
+        if n_ens > 1:
+            ensemble_preds = []
+            for _ in range(n_ens):
+                pred_yi = self.sample(batch_x, target_shape=batch_y.shape)
+                ensemble_preds.append(pred_yi.unsqueeze(1).cpu().numpy())
+            
+            preds_all = np.concatenate(ensemble_preds, axis=1) # (B, N_ens, T, C, H, W)
+            pred_y = np.mean(preds_all, axis=1) # (B, T, C, H, W)
+            
+            outputs = {
+                'inputs': batch_x.cpu().numpy(),
+                'preds': pred_y,
+                'trues': batch_y.cpu().numpy(),
+                'ensemble_preds': preds_all
+            }
+        else:
+            # Sample using ODE
+            pred_y = self.sample(batch_x, target_shape=batch_y.shape)
+            outputs = {
+                'inputs': batch_x.cpu().numpy(),
+                'preds': pred_y.cpu().numpy(),
+                'trues': batch_y.cpu().numpy()
+            }
+            
         self.test_outputs.append(outputs)
         return outputs
     
@@ -563,6 +642,33 @@ class FlowMatching(Base_method):
         # Build comprehensive metrics dict
         results_all['metrics'] = eval_res
         results_all['per_frame_metrics'] = pf_res
+
+        # Calculate CRPS for flow matching if ensemble was computed
+        if 'ensemble_preds' in results_all:
+            eps_preds = results_all['ensemble_preds']  # (Total_B, N_ens, T, C, H, W)
+            trues = results_all['trues']  # (Total_B, T, C, H, W)
+            
+            # Term 1: MAE of each ensemble vs target
+            term1 = np.abs(eps_preds - np.expand_dims(trues, axis=1)).mean()
+            
+            # Term 2: Mean pairwise distance between ensembles
+            term2 = 0.0
+            count = 0
+            N_ens = eps_preds.shape[1]
+            for i in range(N_ens):
+                for j in range(i + 1, N_ens):
+                    term2 += np.abs(eps_preds[:, i] - eps_preds[:, j]).mean()
+                    count += 1
+            if count > 0:
+                term2 /= count
+                
+            crps = float(term1 - 0.5 * term2)
+        else:
+            # Equivalent to MAE when n_ens = 1
+            crps = float(eval_res.get('mae', 0.0))
+            
+        eval_res['crps'] = crps
+        eval_log += f", crps:{crps:.4f}"
 
         # Add summary SSIM at start/mid/end if available
         if 'ssim' in pf_res:

@@ -110,6 +110,12 @@ def create_parser():
     parser.add_argument('--metric_threshold', default=None, type=float,
                         help='Threshold for detection metrics (POD, FAR, CSI). '
                              'If not set, detection metrics are skipped.')
+    parser.add_argument('--limit_test_batches', default=1.0, type=float,
+                        help='Fraction (0.0-1.0) or absolute number of test batches to run. '
+                             'Use a small int (e.g. 2) for a fast dev-run.')
+    parser.add_argument('--fast_dev_run', default=0, type=int,
+                        help='Lightning fast_dev_run: runs N batches of train/val/test and exits. '
+                             'Pass an integer > 0 to enable (e.g. --fast_dev_run 2).')
 
     return parser
 
