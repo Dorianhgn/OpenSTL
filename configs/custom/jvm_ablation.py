@@ -89,7 +89,7 @@ guidance_scale = 1.0  # Ablation: Increase to 2.0-7.0 for stronger guidance
 # - 'mamba': STVMamba (STSS + STDSConv) - efficient for long sequences
 # - 'attention': Self-attention - standard transformer approach
 # - 'conv': Convolutional - lightweight baseline
-block_type = 'attention'  # Ablation: Change to 'attention' or 'conv'
+block_type = 'mamba'  # Ablation: Change to 'mamba', 'attention' or 'conv'
 
 # Model dimensions
 model_dim = 256  # Hidden dimension
@@ -117,9 +117,7 @@ num_heads = 8
 # ==============================================================================
 
 # Whether to use SPADE conditioning
-# - True: SPADE (Spatial Adaptive Normalization) - multiplicative conditioning
-# - False: Concatenation - additive conditioning
-use_spade = True  # Ablation: Set to False for concatenation
+use_spade = False
 
 # Number of SPADE condition channels (used if use_spade=True)
 cond_channels = 10
@@ -129,9 +127,7 @@ cond_channels = 10
 # ==============================================================================
 
 # Whether to use a context encoder (for complex multi-variable conditions)
-# - False: Direct conditioning (for simple datasets like Moving MNIST)
-# - True: Use context encoder (for complex datasets like weather, AOD)
-use_encoder = False  # Set to True for complex datasets
+use_encoder = False  # Set to True if used with SPADE
 
 # Context encoder type (only used if use_encoder=True)
 context_encoder_type = 'ContextNet'
@@ -147,9 +143,8 @@ context_encoder_params = {
 # Positional Encoding (Ablation: RoPE)
 # ==============================================================================
 
-# Whether to use RoPE (Rotary Positional Encoding)
-# Note: This is a placeholder - actual RoPE implementation may vary
-use_rope = True  # Ablation: Set to False to disable
+# Whether to use RoPE (Rotary Positional Encoding) (only relevant for attention blocks)
+use_rope = False  # Ablation: Set to False to disable
 
 # ==============================================================================
 # Training Configuration
