@@ -231,35 +231,23 @@ class FlowMatching(Base_method):
         Returns:
             Predicted sequence (B, T_out, C, H, W)
         """
-        return self.sample(
-            batch_x,
-            target_shape=batch_y.shape if batch_y is not None else None,
-            cond_spatial=kwargs.get('cond_spatial', None),
-        )
-
-    def _extract_batch_parts(self, batch):
-        """Extract (x_past, x_future, cond_spatial) from a batch tuple."""
-        if not isinstance(batch, (tuple, list)):
-            raise TypeError("Expected batch to be a tuple/list like (x_past, x_future[, cond_spatial]).")
-        if len(batch) < 2:
-            raise ValueError("Batch must contain at least (x_past, x_future).")
-        batch_x, batch_y = batch[0], batch[1]
-        cond_spatial = batch[2] if len(batch) > 2 else None
-        return batch_x, batch_y, cond_spatial
+        return self.sample(batch_x, target_shape=batch_y.shape if batch_y is not None else None)
     
-    def _prepare_model_inputs(self, x_t, t, batch_x, cond_spatial=None, apply_cond_dropout=False):
+    def _prepare_model_inputs(self, x_t, t, batch_x, apply_cond_dropout=False):
         """
         Prepare inputs for the SPADEJvM model.
         
         Logic:
         - x_past: Always batch_x (clean past frames)
-        - cond_spatial: external optional conditioning, never auto-derived from x_past
+        - cond_spatial: 
+            * If use_encoder=True: batch_x → ContextNet → cond_spatial
+            * If use_encoder=False and use_spade=True: batch_x flattened → cond_spatial
+            * If use_spade=False: cond_spatial=None (concatenation mode)
         
         Args:
             x_t: Noisy future frames (B, T_out, C, H, W)
             t: Time steps (B,)
             batch_x: Past frames (B, T_in, C, H, W)
-            cond_spatial: Optional external condition
             apply_cond_dropout: Whether to apply CFG dropout
             
         Returns:
@@ -269,25 +257,25 @@ class FlowMatching(Base_method):
         device = x_t.device
         
         x_past = batch_x
-
-        # Validate SPADE/condition compatibility
+        cond_spatial = None
+        
+        # Prepare SPADE condition if use_spade=True
         use_spade = self.hparams.get('use_spade', True)
-        if not use_spade and cond_spatial is not None:
-            raise ValueError(
-                "cond_spatial was provided but use_spade=False. "
-                "Set use_spade=True to use spatial conditioning."
-            )
-
-        # Optional context encoder path for 5D condition sequences
-        if use_spade and cond_spatial is not None and self.context_encoder is not None and cond_spatial.ndim == 5:
-            cond_spatial = self.context_encoder(cond_spatial)
+        if use_spade:
+            if self.context_encoder is not None:
+                # Use ContextNet: (B, T, C, H, W) → (B, cond_channels, H, W)
+                cond_spatial = self.context_encoder(batch_x)
+            else:
+                # Fallback: flatten temporal dimension into channels
+                # (B, T, C, H, W) → (B, T*C, H, W)
+                from einops import rearrange
+                cond_spatial = rearrange(batch_x, 'b t c h w -> b (t c) h w')
         
         # Classifier-Free Guidance: randomly drop conditioning
         if apply_cond_dropout and self._cond_dropout_prob > 0:
             drop_mask = torch.rand(B, device=device) < self._cond_dropout_prob
             # Drop both x_past and cond_spatial
-            if x_past is not None:
-                x_past = x_past * (~drop_mask).view(B, 1, 1, 1, 1).float()
+            x_past = x_past * (~drop_mask).view(B, 1, 1, 1, 1).float()
             if cond_spatial is not None:
                 cond_spatial = cond_spatial * (~drop_mask).view(B, 1, 1, 1).float()
         
@@ -315,9 +303,9 @@ class FlowMatching(Base_method):
         
         In OpenSTL, batch_x = past frames, batch_y = future frames.
         Past frames are always passed as x_past (concatenated in time dim).
-        SPADE spatial condition is optional and must be provided explicitly.
+        SPADE spatial condition is derived from x_past inside the model.
         """
-        batch_x, batch_y, cond_spatial = self._extract_batch_parts(batch)
+        batch_x, batch_y = batch  # (B, T_in, C, H, W), (B, T_out, C, H, W)
         B = batch_y.shape[0]
         device = batch_y.device
         
@@ -339,9 +327,7 @@ class FlowMatching(Base_method):
             t, x_t, v_target = self.fm.sample_location_and_conditional_flow(x_0, batch_y, t=None)
         
         # Prepare model inputs (centralizes x_past / cond logic + CFG dropout)
-        model_inputs = self._prepare_model_inputs(
-            x_t, t, batch_x, cond_spatial=cond_spatial, apply_cond_dropout=True
-        )
+        model_inputs = self._prepare_model_inputs(x_t, t, batch_x, apply_cond_dropout=True)
         
         # Model prediction
         if self._prediction_mode == "x":
@@ -383,7 +369,7 @@ class FlowMatching(Base_method):
     
     def validation_step(self, batch, batch_idx):
         """Validation step using training logic."""
-        batch_x, batch_y, cond_spatial = self._extract_batch_parts(batch)
+        batch_x, batch_y = batch
         B = batch_y.shape[0]
         
         if batch_idx == 0:
@@ -394,9 +380,7 @@ class FlowMatching(Base_method):
         t, x_t, v_target = self.fm.sample_location_and_conditional_flow(x_0, batch_y, t=None)
         
         # Prepare model inputs (no CFG dropout during validation)
-        model_inputs = self._prepare_model_inputs(
-            x_t, t, batch_x, cond_spatial=cond_spatial, apply_cond_dropout=False
-        )
+        model_inputs = self._prepare_model_inputs(x_t, t, batch_x, apply_cond_dropout=False)
         
         if self._prediction_mode == "x":
             x_pred = self._call_model_from_inputs(model_inputs)
@@ -415,7 +399,9 @@ class FlowMatching(Base_method):
         x_loss = nn.functional.mse_loss(x_pred, batch_y)
         loss = v_loss if self._loss_type == "v" else x_loss
         
-        self.log('val_loss', loss, on_step=True, on_epoch=True, prog_bar=False)
+        self.log('val/loss', loss, on_step=True, on_epoch=True, prog_bar=False)
+        self.log('val/v_loss', v_loss, on_step=False, on_epoch=True)
+        self.log('val/x_loss', x_loss, on_step=False, on_epoch=True)
         return loss
     
     def on_validation_epoch_end(self):
@@ -478,14 +464,14 @@ class FlowMatching(Base_method):
 
     def test_step(self, batch, batch_idx):
         """Test step with ODE sampling."""
-        batch_x, batch_y, cond_spatial = self._extract_batch_parts(batch)
+        batch_x, batch_y = batch
         
         n_ens = self.hparams.get('test_num_ensemble', 1)
         
         if n_ens > 1:
             ensemble_preds = []
             for _ in range(n_ens):
-                pred_yi = self.sample(batch_x, target_shape=batch_y.shape, cond_spatial=cond_spatial)
+                pred_yi = self.sample(batch_x, target_shape=batch_y.shape)
                 ensemble_preds.append(pred_yi.unsqueeze(1).cpu().numpy())
             
             preds_all = np.concatenate(ensemble_preds, axis=1) # (B, N_ens, T, C, H, W)
@@ -499,7 +485,7 @@ class FlowMatching(Base_method):
             }
         else:
             # Sample using ODE
-            pred_y = self.sample(batch_x, target_shape=batch_y.shape, cond_spatial=cond_spatial)
+            pred_y = self.sample(batch_x, target_shape=batch_y.shape)
             outputs = {
                 'inputs': batch_x.cpu().numpy(),
                 'preds': pred_y.cpu().numpy(),
@@ -529,7 +515,7 @@ class FlowMatching(Base_method):
             solver: ODE solver ('dopri5', 'rk4', 'euler', 'midpoint')
             guidance_scale: Override guidance scale
             cond_spatial: External spatial condition (B, Cond_C, H, W), optional.
-                         If None, no spatial conditioning is applied.
+                         If None, will be computed from x_past if use_spade=True.
             return_trajectory: Return full ODE trajectory
             
         Returns:
@@ -558,18 +544,17 @@ class FlowMatching(Base_method):
         # Convert past to FP32
         x_past_fp32 = x_past.to(dtype=torch.float32)
         
-        # Validate SPADE/condition compatibility
-        use_spade = self.hparams.get('use_spade', True)
-        if not use_spade and cond_spatial is not None:
-            raise ValueError(
-                "cond_spatial was provided but use_spade=False. "
-                "Set use_spade=True to use spatial conditioning."
-            )
-
-        # Optional context encoder path for 5D condition sequences
-        if use_spade and cond_spatial is not None and self.context_encoder is not None and cond_spatial.ndim == 5:
-            cond_spatial = self.context_encoder(cond_spatial)
-                
+        # Prepare SPADE condition if not provided
+        if cond_spatial is None:
+            use_spade = self.hparams.get('use_spade', True)
+            if use_spade:
+                if self.context_encoder is not None:
+                    cond_spatial = self.context_encoder(x_past_fp32)
+                else:
+                    # Fallback: flatten temporal dimension
+                    from einops import rearrange
+                    cond_spatial = rearrange(x_past_fp32, 'b t c h w -> b (t c) h w')
+        
         # Convert to FP32
         cond_spatial_fp32 = cond_spatial.to(dtype=torch.float32) if cond_spatial is not None else None
         

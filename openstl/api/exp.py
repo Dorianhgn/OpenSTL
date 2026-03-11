@@ -13,6 +13,7 @@ from openstl.utils import (get_dataset, measure_throughput, SetupCallback, Epoch
 
 from lightning import seed_everything, Trainer
 import lightning.pytorch.callbacks as lc
+from lightning.pytorch.loggers import TensorBoardLogger
 
 
 class BaseExperiment(object):
@@ -41,6 +42,7 @@ class BaseExperiment(object):
     def _init_trainer(self, args, callbacks, strategy):
         limit_test = getattr(args, 'limit_test_batches', 1.0)
         fast_dev_run = getattr(args, 'fast_dev_run', 0)
+        logger = TensorBoardLogger(save_dir='lightning_logs', name=args.ex_name, version='')
         return Trainer(devices=args.gpus,
                        max_epochs=args.epoch,
                        strategy=strategy,
@@ -48,6 +50,7 @@ class BaseExperiment(object):
                        callbacks=callbacks,
                        limit_test_batches=limit_test,
                        fast_dev_run=fast_dev_run if fast_dev_run > 0 else False,
+                       logger=logger,
                     )
 
     def _load_callbacks(self, args, save_dir, ckpt_dir):

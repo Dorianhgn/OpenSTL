@@ -2,7 +2,7 @@
 # python tools/visualizations/plot_visuals.py --config plot_configs/visuals/mmnist_visuals.yaml
 
 # Example configuration for plotting video sequence comparisons
-output_dir: 'plots/ablation_plots_visuals'
+output_dir: 'plots/ablation_plots_visuals_mmnist'
 figsize: [20, 8]
 sample_idx: 0  # which sample in the test set batch to visualize
 frame_indices: 'all' # Can be 'all', or a list of indices like [0, 4, 9]
@@ -11,7 +11,8 @@ frame_indices: 'all' # Can be 'all', or a list of indices like [0, 4, 9]
 models:
   # JvM_ens1: 'work_dirs/mmnist_jvm_n_ens_1/saved'
   # JvM_ens5: 'work_dirs/mmnist_jvm_n_ens_5/saved'
-  # SimVP_gSTA: 'work_dirs/mmnist_simvp_gsta/saved'
-  JvM_test: 'work_dirs/mmnist_jvm_test/saved' 
-  JvT_test: 'work_dirs/mmnist_jvt_test/saved'
-  JvC_test: 'work_dirs/mmnist_jvc_test/saved'
+  SimVP_gSTA: 'work_dirs/mmnist_simvp_gsta/saved'
+  JvM: 'work_dirs/mmnist_jvm/saved' 
+  JvT: 'work_dirs/mmnist_jvt/saved'
+  JvT_rope: 'work_dirs/mmnist_jvt_rope/saved'
+  JvC: 'work_dirs/mmnist_jvc/saved'

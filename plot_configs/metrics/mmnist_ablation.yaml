@@ -1,5 +1,5 @@
 # Pour lancer le script avec le fichier de configuration YAML :
-# python tools/visualizations/plot_metrics.py --config plot_configs/metrics/mmnist_ablation.yaml
+# python -m tools.visualizations.plot_metrics --config plot_configs/metrics/mmnist_ablation.yaml
 
 # Example configuration for plotting metric comparisons
 output_dir: 'plots/ablation_plots_metrics'
@@ -11,6 +11,8 @@ models:
   # JvM_ens1: 'work_dirs/mmnist_jvm_n_ens_1/saved/per_frame_metrics.npy'
   # JvM_ens5: 'work_dirs/mmnist_jvm_n_ens_5/saved/per_frame_metrics.npy'
   # SimVP_gSTA: 'work_dirs/mmnist_simvp_gsta/saved/per_frame_metrics.npy'
-  JvM_test: 'work_dirs/mmnist_jvm_test/saved/per_frame_metrics.npy'
-  JvT_test: 'work_dirs/mmnist_jvt_test/saved/per_frame_metrics.npy'
-  JvC_test: 'work_dirs/mmnist_jvc_test/saved/per_frame_metrics.npy'
+  SimVP_gSTA: 'work_dirs/mmnist_simvp_gsta/saved/per_frame_metrics.npy'
+  JvM: 'work_dirs/mmnist_jvm/saved/per_frame_metrics.npy'
+  JvT: 'work_dirs/mmnist_jvt/saved/per_frame_metrics.npy'
+  JvT_rope: 'work_dirs/mmnist_jvt_rope/saved/per_frame_metrics.npy'
+  JvC: 'work_dirs/mmnist_jvc/saved/per_frame_metrics.npy'

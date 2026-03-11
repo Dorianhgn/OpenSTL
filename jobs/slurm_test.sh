@@ -3,12 +3,12 @@
 #=======================================================================
 # SLURM CONFIGURATION
 #=======================================================================
-#SBATCH --job-name=openstl-train
+#SBATCH --job-name=openstl-test
 #SBATCH --partition=frida
 #SBATCH --time=1-00:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --gpus-per-node=H100:1          # or A100:1 depending on your GPU
+#SBATCH --gpus-per-node=1          # or A100:1 depending on your GPU
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=96G
 #SBATCH --output=logs/job_%j_%x.out
@@ -23,7 +23,7 @@ echo "Submitting job $SLURM_JOB_ID in container..."
 CONTAINER_IMAGE="docker://dorianhgn/openstl-mamba:latest"  
 WORKSPACE_DIR="$HOME/OpenSTL"
 export DATASET="mmnist"                                    # Dataset name (e.g., mmnist, etc.)
-export CONFIG_FILE="work_dirs/mmnist_jvm_ens_5/config.py"
+export CONFIG_FILE="work_dirs/mmnist_jvm_ens_5/config_base.py"
 export EXPERIMENT_NAME="mmnist_jvm_ens_5"
 
 # Créer le répertoire de logs s'il n'existe pas
@@ -48,11 +48,11 @@ srun \
     # 1) Install OpenSTL in dev mode
     pip install -e .
 
-    # 2) Start training
-    python tools/train.py -d $DATASET -c $CONFIG_FILE --ex_name $EXPERIMENT_NAME
+    # 2) Start testing
+    python tools/test.py -d $DATASET -c $CONFIG_FILE --ex_name $EXPERIMENT_NAME
 
 
-    echo "--- Training finished ---"
+    echo "--- Testing finished ---"
   '
 
 echo "Job finished at $(date)"
