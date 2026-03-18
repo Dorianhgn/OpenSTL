@@ -26,6 +26,7 @@ def load_data(dataname, batch_size, val_batch_size, num_workers, data_root, dist
     elif dataname in ['mmnist', 'mfmnist', 'mmnist_cifar']:  # 'mmnist', 'mfmnist', 'mmnist_cifar'
         from .dataloader_moving_mnist import load_data
         cfg_dataloader['data_name'] = kwargs.get('data_name', 'mnist')
+        cfg_dataloader['return_labels'] = kwargs.get('return_labels', False)
         return load_data(batch_size, val_batch_size, data_root, num_workers, **cfg_dataloader)
     elif 'noisymmnist' in dataname:  # 'mmnist - perceptual', 'mmnist - missing', 'mmnist - dynamic' 
         from .dataloader_noisy_moving_mnist import load_data

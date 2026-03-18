@@ -42,16 +42,23 @@ class BaseExperiment(object):
     def _init_trainer(self, args, callbacks, strategy):
         limit_test = getattr(args, 'limit_test_batches', 1.0)
         fast_dev_run = getattr(args, 'fast_dev_run', 0)
+        clip_grad = getattr(args, 'clip_grad', None)
+        clip_mode = getattr(args, 'clip_mode', 'norm')
         logger = TensorBoardLogger(save_dir='lightning_logs', name=args.ex_name, version='')
-        return Trainer(devices=args.gpus,
-                       max_epochs=args.epoch,
-                       strategy=strategy,
-                       accelerator='gpu',
-                       callbacks=callbacks,
-                       limit_test_batches=limit_test,
-                       fast_dev_run=fast_dev_run if fast_dev_run > 0 else False,
-                       logger=logger,
-                    )
+        trainer_kwargs = dict(
+            devices=args.gpus,
+            max_epochs=args.epoch,
+            strategy=strategy,
+            accelerator='gpu',
+            callbacks=callbacks,
+            limit_test_batches=limit_test,
+            fast_dev_run=fast_dev_run if fast_dev_run > 0 else False,
+            logger=logger,
+        )
+        if clip_grad is not None:
+            trainer_kwargs['gradient_clip_val'] = clip_grad
+            trainer_kwargs['gradient_clip_algorithm'] = clip_mode
+        return Trainer(**trainer_kwargs)
 
     def _load_callbacks(self, args, save_dir, ckpt_dir):
         method_info = None

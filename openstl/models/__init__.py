@@ -12,11 +12,11 @@ from .simvp_model import SimVP_Model
 from .mmvp_model import MMVP_Model
 from .swinlstm_model import SwinLSTM_D_Model, SwinLSTM_B_Model
 from .spade_jvm_model import SPADEJvM_Model
-from .context_nets import ContextNet, build_context_encoder
+from .context_nets import ContextNet, LabelConditioner, build_context_encoder
 
 __all__ = [
     'ConvLSTM_Model', 'E3DLSTM_Model', 'MAU_Model', 'MIM_Model', 'PhyDNet_Model',
     'PredRNN_Model', 'PredRNNpp_Model', 'PredRNNv2_Model', 'SimVP_Model',
     "MMVP_Model", 'SwinLSTM_D_Model', 'SwinLSTM_B_Model', 'SPADEJvM_Model',
-    'ContextNet', 'build_context_encoder'
+    'ContextNet', 'LabelConditioner', 'build_context_encoder'
 ]

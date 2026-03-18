@@ -122,6 +122,16 @@ use_spade = False
 # Number of SPADE condition channels (used if use_spade=True)
 cond_channels = 10
 
+# Optional label conditioning (MMNIST benchmark)
+use_label_conditioner = False
+label_conditioner_type = 'LabelConditioner'
+label_conditioner_params = {
+    'hidden_dim': 32,
+    'dropout': 0.0,
+}
+num_classes = 10
+return_labels = False
+
 # ==============================================================================
 # Context Encoder (Optional)
 # ==============================================================================

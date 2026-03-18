@@ -109,6 +109,12 @@ class FlowMatching(Base_method):
         # Classifier-Free Guidance
         cond_dropout_prob: float = 0.0,
         guidance_scale: float = 1.0,
+
+        # Optional label conditioning for MMNIST-style benchmarks
+        use_label_conditioner: bool = False,
+        label_conditioner_type: str = 'LabelConditioner',
+        label_conditioner_params: Optional[dict] = None,
+        num_classes: int = 10,
         
         **args,
     ):
@@ -138,6 +144,10 @@ class FlowMatching(Base_method):
         self._ot_reg = ot_reg
         self._cond_dropout_prob = cond_dropout_prob
         self._guidance_scale = guidance_scale
+        self._use_label_conditioner = use_label_conditioner
+        self._label_conditioner_type = label_conditioner_type
+        self._label_conditioner_params = label_conditioner_params or {}
+        self._num_classes = num_classes
         self._test_num_ensemble = test_num_ensemble
         self._metric_threshold = metric_threshold
         
@@ -155,7 +165,9 @@ class FlowMatching(Base_method):
             'prediction_mode', 'loss_type', 'sigma_min', 'ode_solver',
             'num_inference_steps', 'sample_t_distrib', 'logit_normal_loc',
             'logit_normal_scale', 'use_ot_sampling', 'ot_method', 'ot_reg',
-            'cond_dropout_prob', 'guidance_scale', 'test_num_ensemble', 'metric_threshold'
+            'cond_dropout_prob', 'guidance_scale', 'use_label_conditioner',
+            'label_conditioner_type', 'label_conditioner_params', 'num_classes',
+            'test_num_ensemble', 'metric_threshold'
         )
         
         # Flow Matching components
@@ -187,12 +199,38 @@ class FlowMatching(Base_method):
                 **encoder_params
             )
             print(f"Initialized {encoder_type} context encoder with params: {encoder_params}")
+
+        # Label Conditioner (optional, used for label-injection benchmarks)
+        self.label_conditioner = None
+        if self._use_label_conditioner:
+            label_out_channels = args.get('cond_channels', 10)
+            self.label_conditioner = build_context_encoder(
+                encoder_type=self._label_conditioner_type,
+                num_classes=self._num_classes,
+                out_channels=label_out_channels,
+                **self._label_conditioner_params,
+            )
+            print(
+                f"Initialized {self._label_conditioner_type} label conditioner "
+                f"for {self._num_classes} classes with params: {self._label_conditioner_params}"
+            )
         
         # Time endpoint for sampling
         self.t_end = 1.0 - 1e-3 if prediction_mode == "x" else 1.0
         
         # Test outputs storage
         self.test_outputs = []
+
+    def _split_batch(self, batch):
+        """Handle either (x, y) or (x, y, labels) batches without breaking SimVP."""
+        if isinstance(batch, (tuple, list)):
+            if len(batch) == 2:
+                return batch[0], batch[1], None
+            if len(batch) == 3:
+                return batch[0], batch[1], batch[2]
+        raise ValueError(
+            f"Unsupported batch format: type={type(batch)}, len={len(batch) if hasattr(batch, '__len__') else 'NA'}"
+        )
     
     def _build_model(self, **args):
         """Build SPADEJvM model."""
@@ -214,7 +252,7 @@ class FlowMatching(Base_method):
             'pre_seq_length': pre_seq_length,
             'aft_seq_length': aft_seq_length,
             'block_type': args.get('block_type', 'mamba'),
-            'use_spade': args.get('use_spade', True),
+            'use_spade': args.get('use_spade', True) or self._use_label_conditioner,
             'use_rope': args.get('use_rope', True),
             'd_state': args.get('d_state', 64),
             'd_conv': args.get('d_conv', 4),
@@ -237,9 +275,13 @@ class FlowMatching(Base_method):
         Returns:
             Predicted sequence (B, T_out, C, H, W)
         """
-        return self.sample(batch_x, target_shape=batch_y.shape if batch_y is not None else None)
+        return self.sample(
+            batch_x,
+            target_shape=batch_y.shape if batch_y is not None else None,
+            labels=kwargs.get('labels', None),
+        )
     
-    def _prepare_model_inputs(self, x_t, t, batch_x, apply_cond_dropout=False):
+    def _prepare_model_inputs(self, x_t, t, batch_x, batch_labels=None, apply_cond_dropout=False):
         """
         Prepare inputs for the SPADEJvM model.
         
@@ -254,6 +296,7 @@ class FlowMatching(Base_method):
             x_t: Noisy future frames (B, T_out, C, H, W)
             t: Time steps (B,)
             batch_x: Past frames (B, T_in, C, H, W)
+            batch_labels: Optional sequence labels (B, num_classes)
             apply_cond_dropout: Whether to apply CFG dropout
             
         Returns:
@@ -266,9 +309,11 @@ class FlowMatching(Base_method):
         cond_spatial = None
         
         # Prepare SPADE condition if use_spade=True
-        use_spade = self.hparams.get('use_spade', True)
+        use_spade = self.hparams.get('use_spade', True) or self._use_label_conditioner
         if use_spade:
-            if self.context_encoder is not None:
+            if batch_labels is not None and self.label_conditioner is not None:
+                cond_spatial = self.label_conditioner(batch_labels)
+            elif self.context_encoder is not None:
                 # Use ContextNet: (B, T, C, H, W) → (B, cond_channels, H, W)
                 cond_spatial = self.context_encoder(batch_x)
             else:
@@ -311,7 +356,7 @@ class FlowMatching(Base_method):
         Past frames are always passed as x_past (concatenated in time dim).
         SPADE spatial condition is derived from x_past inside the model.
         """
-        batch_x, batch_y = batch  # (B, T_in, C, H, W), (B, T_out, C, H, W)
+        batch_x, batch_y, batch_labels = self._split_batch(batch)  # (B, T_in, C, H, W), (B, T_out, C, H, W), labels optional
         B = batch_y.shape[0]
         device = batch_y.device
         
@@ -333,7 +378,9 @@ class FlowMatching(Base_method):
             t, x_t, v_target = self.fm.sample_location_and_conditional_flow(x_0, batch_y, t=None)
         
         # Prepare model inputs (centralizes x_past / cond logic + CFG dropout)
-        model_inputs = self._prepare_model_inputs(x_t, t, batch_x, apply_cond_dropout=True)
+        model_inputs = self._prepare_model_inputs(
+            x_t, t, batch_x, batch_labels=batch_labels, apply_cond_dropout=True
+        )
         
         # Model prediction
         if self._prediction_mode == "x":
@@ -380,18 +427,24 @@ class FlowMatching(Base_method):
     
     def validation_step(self, batch, batch_idx):
         """Validation step using training logic."""
-        batch_x, batch_y = batch
+        batch_x, batch_y, batch_labels = self._split_batch(batch)
         B = batch_y.shape[0]
         
         if batch_idx == 0:
-            self._eval_sample_batch = (batch_x[:4].detach().clone(), batch_y[:4].detach().clone())
+            self._eval_sample_batch = (
+                batch_x[:4].detach().clone(),
+                batch_y[:4].detach().clone(),
+                batch_labels[:4].detach().clone() if batch_labels is not None else None,
+            )
             
         # Sample and compute loss
         x_0 = torch.randn_like(batch_y)
         t, x_t, v_target = self.fm.sample_location_and_conditional_flow(x_0, batch_y, t=None)
         
         # Prepare model inputs (no CFG dropout during validation)
-        model_inputs = self._prepare_model_inputs(x_t, t, batch_x, apply_cond_dropout=False)
+        model_inputs = self._prepare_model_inputs(
+            x_t, t, batch_x, batch_labels=batch_labels, apply_cond_dropout=False
+        )
         
         if self._prediction_mode == "x":
             x_pred = self._call_model_from_inputs(model_inputs)
@@ -425,12 +478,12 @@ class FlowMatching(Base_method):
         if not hasattr(self, '_eval_sample_batch'):
             return
             
-        batch_x, batch_y = self._eval_sample_batch
+        batch_x, batch_y, batch_labels = self._eval_sample_batch
         
         try:
             with torch.no_grad():
                 # Force n_ens=1 for validation fast sampling
-                x_samples = self.sample(batch_x, target_shape=batch_y.shape)
+                x_samples = self.sample(batch_x, target_shape=batch_y.shape, labels=batch_labels)
                 
                 # Compute Sample MSE & MAE directly
                 sample_mse = nn.functional.mse_loss(x_samples, batch_y).item()
@@ -481,13 +534,13 @@ class FlowMatching(Base_method):
 
     def test_step(self, batch, batch_idx):
         """Test step with ODE sampling."""
-        batch_x, batch_y = batch
+        batch_x, batch_y, batch_labels = self._split_batch(batch)
         
         n_ens = int(self.hparams.get('test_num_ensemble', self._test_num_ensemble))
         
         ensemble_preds = []
         for _ in range(n_ens):
-            pred_yi = self.sample(batch_x, target_shape=batch_y.shape)
+            pred_yi = self.sample(batch_x, target_shape=batch_y.shape, labels=batch_labels)
             ensemble_preds.append(pred_yi.unsqueeze(1))
 
         ensemble_preds = torch.cat(ensemble_preds, dim=1)
@@ -499,6 +552,8 @@ class FlowMatching(Base_method):
             'trues': batch_y.cpu().numpy(),
             'ensemble_preds': ensemble_preds.cpu().numpy()
         }
+        if batch_labels is not None:
+            outputs['labels'] = batch_labels.cpu().numpy()
 
         if n_ens > 1:
             trues = batch_y.unsqueeze(1)
@@ -522,6 +577,7 @@ class FlowMatching(Base_method):
         num_steps: Optional[int] = None,
         solver: Optional[str] = None,
         guidance_scale: Optional[float] = None,
+        labels: Optional[torch.Tensor] = None,
         cond_spatial: Optional[torch.Tensor] = None,
         return_trajectory: bool = False,
     ) -> torch.Tensor:
@@ -534,6 +590,7 @@ class FlowMatching(Base_method):
             num_steps: Number of ODE steps
             solver: ODE solver ('dopri5', 'rk4', 'euler', 'midpoint')
             guidance_scale: Override guidance scale
+            labels: Optional sequence labels (B, num_classes) for label conditioning
             cond_spatial: External spatial condition (B, Cond_C, H, W), optional.
                          If None, will be computed from x_past if use_spade=True.
             return_trajectory: Return full ODE trajectory
@@ -566,9 +623,11 @@ class FlowMatching(Base_method):
         
         # Prepare SPADE condition if not provided
         if cond_spatial is None:
-            use_spade = self.hparams.get('use_spade', True)
+            use_spade = self.hparams.get('use_spade', True) or self._use_label_conditioner
             if use_spade:
-                if self.context_encoder is not None:
+                if labels is not None and self.label_conditioner is not None:
+                    cond_spatial = self.label_conditioner(labels)
+                elif self.context_encoder is not None:
                     cond_spatial = self.context_encoder(x_past_fp32)
                 else:
                     # Fallback: flatten temporal dimension

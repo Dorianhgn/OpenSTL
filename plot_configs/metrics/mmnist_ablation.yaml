@@ -13,5 +13,6 @@ models:
   # SimVP_gSTA: 'work_dirs/mmnist_simvp_gsta/saved/per_frame_metrics.npy'
   SimVP_gSTA: 'work_dirs/mmnist/simvp_gsta/cosine/saved/per_frame_metrics.npy'
   JvM_ens5: 'work_dirs/mmnist/jvm/cosine/saved/per_frame_metrics.npy'
+  JvM_SPADE_ens5: 'work_dirs/mmnist/jvm_spade/cosine/saved/per_frame_metrics.npy'
   JvT_ens5: 'work_dirs/mmnist/jvt_rope/cosine/saved/per_frame_metrics.npy'
   JvC_ens5: 'work_dirs/mmnist/jvc/cosine/saved/per_frame_metrics.npy'

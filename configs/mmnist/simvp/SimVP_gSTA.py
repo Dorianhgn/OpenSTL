@@ -21,5 +21,5 @@ opt = 'adamw'
 weight_decay = 1.0e-4
 
 # testing
-metric_threshold=128
+metric_threshold=0.7
 metrics = ['mse', 'mae', 'ssim', 'psnr', 'lpips', 'pod', 'far', 'csi']

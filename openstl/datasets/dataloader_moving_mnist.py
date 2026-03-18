@@ -38,6 +38,19 @@ def load_mnist(root, data_name='mnist'):
     return mnist
 
 
+def load_mnist_labels(root, data_name='mnist'):
+    # Load MNIST labels for sequence-level label conditioning.
+    file_map = {
+        'mnist': 'moving_mnist/train-labels-idx1-ubyte.gz',
+        'fmnist': 'moving_fmnist/train-labels-idx1-ubyte.gz',
+        'mnist_cifar': 'moving_mnist/train-labels-idx1-ubyte.gz',
+    }
+    path = os.path.join(root, file_map[data_name])
+    with gzip.open(path, 'rb') as f:
+        labels = np.frombuffer(f.read(), np.uint8, offset=8)
+    return labels
+
+
 def load_fixed_set(root, data_name='mnist'):
     # Load the fixed dataset
     file_map = {
@@ -50,6 +63,19 @@ def load_fixed_set(root, data_name='mnist'):
     if 'cifar' not in data_name:
         dataset = dataset[..., np.newaxis]
     return dataset
+
+
+def load_fixed_labels(root, data_name='mnist'):
+    # Optional companion labels for the fixed test sequence.
+    file_map = {
+        'mnist': 'moving_mnist/mnist_test_seq_labels.npy',
+        'fmnist': 'moving_fmnist/fmnist_test_seq_labels.npy',
+        'mnist_cifar': 'moving_mnist/mnist_cifar_test_seq_labels.npy',
+    }
+    path = os.path.join(root, file_map[data_name])
+    if not os.path.exists(path):
+        return None
+    return np.load(path)
 
 
 class MovingMNIST(Dataset):
@@ -68,21 +94,27 @@ class MovingMNIST(Dataset):
 
     def __init__(self, root, is_train=True, data_name='mnist',
                  n_frames_input=10, n_frames_output=10, image_size=64,
-                 num_objects=[2], transform=None, use_augment=False):
+                 num_objects=[2], transform=None, use_augment=False,
+                 return_labels=False):
         super(MovingMNIST, self).__init__()
 
         self.dataset = None
         self.is_train = is_train
         self.data_name = data_name
+        self.return_labels = return_labels
+        self.num_classes = 10
         if self.is_train:
             self.mnist = load_mnist(root, data_name)
+            self.mnist_labels = load_mnist_labels(root, data_name)
             self.cifar = load_cifar(root, data_name)
         else:
             if num_objects[0] != 2:
                 self.mnist = load_mnist(root, data_name)
+                self.mnist_labels = load_mnist_labels(root, data_name)
                 self.cifar = load_cifar(root, data_name)
             else:
                 self.dataset = load_fixed_set(root, data_name)
+                self.fixed_labels = load_fixed_labels(root, data_name) if return_labels else None
         self.length = int(1e4) if self.dataset is None else self.dataset.shape[1]
 
         self.num_objects = num_objects
@@ -144,7 +176,7 @@ class MovingMNIST(Dataset):
         start_x = (canvas_size * start_x).astype(np.int32)
         return start_y, start_x
 
-    def generate_moving_mnist(self, num_digits=2, background=False):
+    def generate_moving_mnist(self, num_digits=2, background=False, return_labels=False):
         '''
         Get random trajectories for the digits and generate a video.
         '''
@@ -155,11 +187,13 @@ class MovingMNIST(Dataset):
             ind = random.randint(0, self.cifar.shape[0] - 1)
             back = cv2.resize(self.cifar[ind], (self.image_size_, self.image_size_), interpolation=cv2.INTER_CUBIC)
             data = np.repeat(back[np.newaxis, ...], self.n_frames_total, axis=0).astype(np.uint8)
+        digit_labels = []
         for n in range(num_digits):
             # Trajectory
             start_y, start_x = self.get_random_trajectory(self.n_frames_total)
             ind = random.randint(0, self.mnist.shape[0] - 1)
             digit_image = self.mnist[ind].copy()
+            digit_labels.append(int(self.mnist_labels[ind]))
             if background:  # binary {0, 255}
                 digit_image[digit_image > 1] = 255
             for i in range(self.n_frames_total):
@@ -177,7 +211,13 @@ class MovingMNIST(Dataset):
 
         if not background:
             data = data[..., np.newaxis]
-        return data
+
+        if not return_labels:
+            return data
+
+        label = np.zeros(self.num_classes, dtype=np.float32)
+        label[np.unique(np.asarray(digit_labels, dtype=np.int64))] = 1.0
+        return data, label
 
     def _augment_seq(self, imgs, crop_scale=0.94):
         """Augmentations for video"""
@@ -203,9 +243,22 @@ class MovingMNIST(Dataset):
             # Sample number of objects
             num_digits = random.choice(self.num_objects)
             # Generate data on the fly
-            images = self.generate_moving_mnist(num_digits, self.background)
+            generated = self.generate_moving_mnist(num_digits, self.background, return_labels=self.return_labels)
+            if self.return_labels:
+                images, labels = generated
+            else:
+                images = generated
+                labels = None
         else:
             images = self.dataset[:, idx, ...]
+            labels = None
+            if self.return_labels:
+                if self.fixed_labels is None:
+                    raise FileNotFoundError(
+                        f"return_labels=True requires a fixed label file for {self.data_name}. "
+                        "Expected a companion *_labels.npy file next to the fixed test sequence."
+                    )
+                labels = self.fixed_labels[idx]
 
         if not self.background:
             r, w = 1, self.image_size_
@@ -228,6 +281,10 @@ class MovingMNIST(Dataset):
             input = imgs[:self.n_frames_input, ...]
             output = imgs[self.n_frames_input:self.n_frames_input+self.n_frames_output, ...]
 
+        if self.return_labels:
+            labels = torch.from_numpy(labels).contiguous().float()
+            return input, output, labels
+
         return input, output
 
     def __len__(self):
@@ -236,17 +293,23 @@ class MovingMNIST(Dataset):
 
 def load_data(batch_size, val_batch_size, data_root, num_workers=4, data_name='mnist',
               pre_seq_length=10, aft_seq_length=10, in_shape=[10, 1, 64, 64],
-              distributed=False, use_augment=False, use_prefetcher=False, drop_last=False):
+              distributed=False, use_augment=False, use_prefetcher=False, drop_last=False,
+              return_labels=False):
 
     image_size = in_shape[-1] if in_shape is not None else 64
     train_set = MovingMNIST(root=data_root, is_train=True, data_name=data_name,
                             n_frames_input=pre_seq_length,
                             n_frames_output=aft_seq_length, num_objects=[2],
-                            image_size=image_size, use_augment=use_augment)
+                            image_size=image_size, use_augment=use_augment,
+                            return_labels=return_labels)
     test_set = MovingMNIST(root=data_root, is_train=False, data_name=data_name,
                            n_frames_input=pre_seq_length,
                            n_frames_output=aft_seq_length, num_objects=[2],
-                           image_size=image_size, use_augment=False)
+                           image_size=image_size, use_augment=False,
+                           return_labels=return_labels)
+
+    if return_labels and use_prefetcher:
+        raise ValueError("use_prefetcher is not supported yet with label-aware MovingMNIST batches")
 
     dataloader_train = create_loader(train_set,
                                     batch_size=batch_size,

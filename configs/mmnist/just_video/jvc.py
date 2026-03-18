@@ -74,5 +74,5 @@ weight_decay = 1.0e-4
 # Testing Configuration
 # ==============================================================================
 test_num_ensemble=5
-metric_threshold=128
+metric_threshold=0.7
 metrics = ['crps', 'mse', 'mae', 'ssim', 'psnr', 'lpips', 'pod', 'far', 'csi']

@@ -14,6 +14,7 @@ Available encoders:
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from einops import rearrange
 
 
@@ -125,10 +126,63 @@ class ContextNet(nn.Module):
         return x  # (B, out_channels, H, W)
 
 
+class LabelConditioner(nn.Module):
+    """
+    Lightweight conditioner for categorical / multi-hot labels.
+
+    Transforms a label vector (B, num_classes) or class indices (B,) into a
+    compact spatial tensor compatible with SPADE conditioning.
+
+    Args:
+        num_classes: Size of the label vocabulary.
+        out_channels: Output channels for conditioning.
+        hidden_dim: Internal projection width.
+        dropout: Dropout rate on the label embedding.
+    """
+
+    def __init__(
+        self,
+        num_classes: int = 10,
+        out_channels: int = 64,
+        hidden_dim: int = 64,
+        dropout: float = 0.0,
+    ):
+        super().__init__()
+        self.num_classes = num_classes
+
+        layers = [
+            nn.Linear(num_classes, hidden_dim),
+            nn.SiLU(),
+        ]
+        if dropout > 0:
+            layers.append(nn.Dropout(dropout))
+        layers.extend([
+            nn.Linear(hidden_dim, out_channels),
+            nn.SiLU(),
+        ])
+        self.proj = nn.Sequential(*layers)
+
+    def forward(self, labels):
+        """
+        Args:
+            labels: (B,) integer class indices or (B, num_classes) multi-hot vectors.
+
+        Returns:
+            (B, out_channels, 1, 1) spatial conditioning tensor.
+        """
+        if labels.ndim == 1:
+            labels = F.one_hot(labels.long(), num_classes=self.num_classes)
+        labels = labels.float()
+        cond = self.proj(labels)
+        return cond.unsqueeze(-1).unsqueeze(-1)
+
+
 # Registry for context encoders
 CONTEXT_ENCODER_REGISTRY = {
     'contextnet': ContextNet,
     'ContextNet': ContextNet,
+    'labelconditioner': LabelConditioner,
+    'LabelConditioner': LabelConditioner,
 }
 
 

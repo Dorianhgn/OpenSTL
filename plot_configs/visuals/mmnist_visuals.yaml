@@ -6,12 +6,14 @@ output_dir: 'plots/ablation_plots_visuals_mmnist'
 figsize: [20, 8]
 sample_idx: 0  # which sample in the test set batch to visualize
 frame_indices: 'all' # Can be 'all', or a list of indices like [0, 4, 9]
+sample_idx: 0
 
 # Mapping of Model Name to the OpenSTL 'saved/' output directory
 models:
-  # JvM_ens1: 'work_dirs/mmnist_jvm_n_ens_1/saved'
-  # JvM_ens5: 'work_dirs/mmnist_jvm_n_ens_5/saved'
+  # # JvM_ens1: 'work_dirs/mmnist_jvm_n_ens_1/saved'
+  # # JvM_ens5: 'work_dirs/mmnist_jvm_n_ens_5/saved'
   SimVP_gSTA: 'work_dirs/mmnist/simvp_gsta/cosine/saved/'
-  JvM_ens5: 'work_dirs/mmnist/jvm/cosine/saved/'
-  JvT_ens5: 'work_dirs/mmnist/jvt_rope/cosine/saved/'
-  JvC_ens5: 'work_dirs/mmnist/jvc/cosine/saved/'
+  # JvM_ens5: 'work_dirs/mmnist/jvm/cosine/saved/'
+  JvM_SPADE_ens5: 'work_dirs/mmnist/jvm_spade/cosine/saved/'
+  # JvT_ens5: 'work_dirs/mmnist/jvt_rope/cosine/saved/'
+  # JvC_ens5: 'work_dirs/mmnist/jvc/cosine/saved/'

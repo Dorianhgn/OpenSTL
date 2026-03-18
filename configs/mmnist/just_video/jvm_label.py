@@ -21,7 +21,6 @@ cfg_dropout_prob = 0.1  # 10% chance to drop condition during training
 guidance_scale = 1.0  # No guidance during training (will be overridden at test time)
 
 # model parameters
-
 block_type = 'mamba'  # Ablation: Change to 'mamba', 'attention' or 'conv'
 
 # Model dimensions
@@ -45,17 +44,17 @@ expand = 2
 # Attention-specific 
 num_heads = 8
 
-# Conditionning : None with mmnist
-use_spade = False
-use_encoder = False 
-use_label_conditioner = False
+# Conditioning: label injection benchmark
+use_spade = True
+use_encoder = False
+use_label_conditioner = True
 label_conditioner_type = 'LabelConditioner'
 label_conditioner_params = {
-	'hidden_dim': 32,
-	'dropout': 0.0,
+    'hidden_dim': 32,
+    'dropout': 0.0,
 }
 num_classes = 10
-return_labels = False
+return_labels = True
 
 # Positional Encoding
 use_rope = False # no RoPE for JvM
@@ -81,8 +80,14 @@ opt = 'adamw'
 weight_decay = 1.0e-4
 
 # ==============================================================================
+# Fast dev smoke test
+# ==============================================================================
+fast_dev_run = 1
+limit_test_batches = 1
+
+# ==============================================================================
 # Testing Configuration
 # ==============================================================================
 test_num_ensemble=5
-metric_threshold=0.7
+metric_threshold=0.8
 metrics = ['crps', 'mse', 'mae', 'ssim', 'psnr', 'lpips', 'pod', 'far', 'csi']
