@@ -93,6 +93,8 @@ class FlowMatching(Base_method):
         sigma_min: float = 0.0,
         ode_solver: str = "dopri5",
         num_inference_steps: int = 50,
+        test_num_ensemble: int = 5,
+        metric_threshold: Optional[float] = 128.0,
         
         # Time sampling
         sample_t_distrib: str = "uniform",
@@ -136,12 +138,16 @@ class FlowMatching(Base_method):
         self._ot_reg = ot_reg
         self._cond_dropout_prob = cond_dropout_prob
         self._guidance_scale = guidance_scale
+        self._test_num_ensemble = test_num_ensemble
+        self._metric_threshold = metric_threshold
         
         # Enforce loss_type consistency for v prediction
         if prediction_mode == "v":
             self._loss_type = "v"
         
         # Initialize base
+        args["metric_threshold"] = metric_threshold
+        args["test_num_ensemble"] = test_num_ensemble
         super().__init__(**args)
         
         # Store in hparams
@@ -149,7 +155,7 @@ class FlowMatching(Base_method):
             'prediction_mode', 'loss_type', 'sigma_min', 'ode_solver',
             'num_inference_steps', 'sample_t_distrib', 'logit_normal_loc',
             'logit_normal_scale', 'use_ot_sampling', 'ot_method', 'ot_reg',
-            'cond_dropout_prob', 'guidance_scale'
+            'cond_dropout_prob', 'guidance_scale', 'test_num_ensemble', 'metric_threshold'
         )
         
         # Flow Matching components
@@ -358,14 +364,19 @@ class FlowMatching(Base_method):
             loss = v_loss
         else:
             loss = x_loss
+        ssim = self._compute_ssim(x_pred, batch_y, stage='train')
         
         # Log metrics
-        self.log('train_loss', loss, on_step=True, on_epoch=True, prog_bar=True)
-        self.log('train_v_loss', v_loss, on_step=False, on_epoch=True)
-        self.log('train_x_loss', x_loss, on_step=False, on_epoch=True)
-        self.log('train_t_mean', t.mean(), on_step=False, on_epoch=True)
+        metrics = {
+            'loss': loss,
+            'v_loss': v_loss,
+            'x_loss': x_loss,
+            'ssim': ssim,
+        }
+        self._log_step_metrics('train', metrics, on_step=True, on_epoch=True, prog_bar_keys={'loss', 'ssim'})
+        self.log('train/t_mean', t.mean(), on_step=False, on_epoch=True)
         
-        return loss
+        return metrics
     
     def validation_step(self, batch, batch_idx):
         """Validation step using training logic."""
@@ -398,11 +409,16 @@ class FlowMatching(Base_method):
         v_loss = nn.functional.mse_loss(v_pred, v_target)
         x_loss = nn.functional.mse_loss(x_pred, batch_y)
         loss = v_loss if self._loss_type == "v" else x_loss
+        ssim = self._compute_ssim(x_pred, batch_y, stage='val')
         
-        self.log('val/loss', loss, on_step=True, on_epoch=True, prog_bar=False)
-        self.log('val/v_loss', v_loss, on_step=False, on_epoch=True)
-        self.log('val/x_loss', x_loss, on_step=False, on_epoch=True)
-        return loss
+        metrics = {
+            'loss': loss,
+            'v_loss': v_loss,
+            'x_loss': x_loss,
+            'ssim': ssim,
+        }
+        self._log_step_metrics('val', metrics, on_step=True, on_epoch=True, prog_bar_keys={'loss', 'ssim'}, sync_dist=True)
+        return metrics
     
     def on_validation_epoch_end(self):
         """Compute epoch-level metrics for validation with ODE sampling."""
@@ -427,7 +443,8 @@ class FlowMatching(Base_method):
                 trues = batch_y.cpu().numpy()
                 
                 # Full metrics
-                threshold = self.hparams.get('metric_threshold', None)
+                threshold = self._get_metric_threshold()
+                print("METRICS BEFORE CALC:", self.metric_list, threshold)
                 eval_res, _ = metric(
                     preds, trues,
                     self.hparams.test_mean, self.hparams.test_std,
@@ -466,32 +483,35 @@ class FlowMatching(Base_method):
         """Test step with ODE sampling."""
         batch_x, batch_y = batch
         
-        n_ens = self.hparams.get('test_num_ensemble', 1)
+        n_ens = int(self.hparams.get('test_num_ensemble', self._test_num_ensemble))
         
+        ensemble_preds = []
+        for _ in range(n_ens):
+            pred_yi = self.sample(batch_x, target_shape=batch_y.shape)
+            ensemble_preds.append(pred_yi.unsqueeze(1))
+
+        ensemble_preds = torch.cat(ensemble_preds, dim=1)
+        pred_y = ensemble_preds.mean(dim=1)
+
+        outputs = {
+            'inputs': batch_x.cpu().numpy(),
+            'preds': pred_y.cpu().numpy(),
+            'trues': batch_y.cpu().numpy(),
+            'ensemble_preds': ensemble_preds.cpu().numpy()
+        }
+
         if n_ens > 1:
-            ensemble_preds = []
-            for _ in range(n_ens):
-                pred_yi = self.sample(batch_x, target_shape=batch_y.shape)
-                ensemble_preds.append(pred_yi.unsqueeze(1).cpu().numpy())
-            
-            preds_all = np.concatenate(ensemble_preds, axis=1) # (B, N_ens, T, C, H, W)
-            pred_y = np.mean(preds_all, axis=1) # (B, T, C, H, W)
-            
-            outputs = {
-                'inputs': batch_x.cpu().numpy(),
-                'preds': pred_y,
-                'trues': batch_y.cpu().numpy(),
-                'ensemble_preds': preds_all
-            }
+            trues = batch_y.unsqueeze(1)
+            term1 = torch.abs(ensemble_preds - trues).mean()
+            pairwise_terms = []
+            for i in range(n_ens):
+                for j in range(i + 1, n_ens):
+                    pairwise_terms.append(torch.abs(ensemble_preds[:, i] - ensemble_preds[:, j]).mean())
+            term2 = torch.stack(pairwise_terms).mean() if pairwise_terms else torch.zeros((), device=batch_y.device)
+            crps = term1 - 0.5 * term2
         else:
-            # Sample using ODE
-            pred_y = self.sample(batch_x, target_shape=batch_y.shape)
-            outputs = {
-                'inputs': batch_x.cpu().numpy(),
-                'preds': pred_y.cpu().numpy(),
-                'trues': batch_y.cpu().numpy()
-            }
-            
+            crps = torch.abs(pred_y - batch_y).mean()
+
         self.test_outputs.append(outputs)
         return outputs
     
@@ -622,7 +642,7 @@ class FlowMatching(Base_method):
         for k in self.test_outputs[0].keys():
             results_all[k] = np.concatenate([batch[k] for batch in self.test_outputs], axis=0)
         
-        threshold = self.hparams.get('metric_threshold', None)
+        threshold = self._get_metric_threshold()
 
         # Global metrics
         eval_res, eval_log = metric(
@@ -651,7 +671,9 @@ class FlowMatching(Base_method):
             trues = results_all['trues']  # (Total_B, T, C, H, W)
             
             # Term 1: MAE of each ensemble vs target
-            term1 = np.abs(eps_preds - np.expand_dims(trues, axis=1)).mean()
+            diff1 = np.abs(eps_preds - np.expand_dims(trues, axis=1))
+            # Average over batch (0), ensemble (1), time (2), and sum over channels, h, w (3, 4, 5)
+            term1 = diff1.mean(axis=(0, 1, 2)).sum()
             
             # Term 2: Mean pairwise distance between ensembles
             term2 = 0.0
@@ -659,7 +681,8 @@ class FlowMatching(Base_method):
             N_ens = eps_preds.shape[1]
             for i in range(N_ens):
                 for j in range(i + 1, N_ens):
-                    term2 += np.abs(eps_preds[:, i] - eps_preds[:, j]).mean()
+                    diff2 = np.abs(eps_preds[:, i] - eps_preds[:, j])
+                    term2 += diff2.mean(axis=(0, 1)).sum()
                     count += 1
             if count > 0:
                 term2 /= count
@@ -671,6 +694,7 @@ class FlowMatching(Base_method):
             
         eval_res['crps'] = crps
         eval_log += f", crps:{crps:.4f}"
+        self.log('test/crps', crps, on_step=False, on_epoch=True, sync_dist=True)
 
         # Add summary SSIM at start/mid/end if available
         if 'ssim' in pf_res:
@@ -680,6 +704,8 @@ class FlowMatching(Base_method):
             eval_res['ssim_mid'] = float(ssim_pf[T // 2])
             eval_res['ssim_end'] = float(ssim_pf[-1])
             eval_log += f", ssim_start:{ssim_pf[0]}, ssim_mid:{ssim_pf[T // 2]}, ssim_end:{ssim_pf[-1]}"
+
+        self.log_dict({f'test/{k}': float(v) for k, v in eval_res.items()}, sync_dist=True)
 
         if self.trainer.is_global_zero:
             print_log(eval_log)

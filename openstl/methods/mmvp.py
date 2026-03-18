@@ -24,5 +24,5 @@ class MMVP(Base_method):
         batch_x, batch_y = batch
         pred_y = self(torch.cat((batch_x, batch_y), dim=1))
         loss = self.criterion(pred_y, batch_y)
-        self.log('train_loss', loss, on_step=True, on_epoch=True, prog_bar=True)
+        self.log('train/loss', loss, on_step=True, on_epoch=True, prog_bar=True)
         return loss

@@ -12,3 +12,7 @@ lr = 1e-3
 batch_size = 16
 drop_path = 0
 sched = 'onecycle'
+
+# testing
+metric_threshold=128
+metrics = ['mse', 'mae', 'ssim', 'psnr', 'lpips', 'pod', 'far', 'csi']

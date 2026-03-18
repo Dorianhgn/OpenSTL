@@ -41,5 +41,5 @@ class PhyDNet(Base_method):
         teacher_forcing_ratio = np.maximum(0 , 1 - self.current_epoch * 0.003) 
         pred_y = self.model(batch_x, batch_y, self.constraints, teacher_forcing_ratio)
         loss = self.criterion(pred_y, batch_y)
-        self.log('train_loss', loss, on_step=True, on_epoch=True, prog_bar=True)
+        self.log('train/loss', loss, on_step=True, on_epoch=True, prog_bar=True)
         return loss

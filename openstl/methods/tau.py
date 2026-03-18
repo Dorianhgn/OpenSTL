@@ -34,5 +34,5 @@ class TAU(SimVP):
         batch_x, batch_y = batch
         pred_y = self(batch_x)
         loss = self.criterion(pred_y, batch_y) + self.hparams.alpha * self.diff_div_reg(pred_y, batch_y)
-        self.log('train_loss', loss, on_step=True, on_epoch=True, prog_bar=True)
+        self.log('train/loss', loss, on_step=True, on_epoch=True, prog_bar=True)
         return loss

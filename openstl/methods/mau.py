@@ -39,5 +39,5 @@ class MAU(Base_method):
         ims = torch.cat([batch_x, batch_y], dim=1).permute(0, 1, 3, 4, 2).contiguous()
         eta, real_input_flag = schedule_sampling(self.eta, self.global_step, ims.shape[0], self.hparams)
         img_gen, loss = self.model(ims, real_input_flag)
-        self.log('train_loss', loss, on_step=True, on_epoch=True, prog_bar=True)
+        self.log('train/loss', loss, on_step=True, on_epoch=True, prog_bar=True)
         return loss

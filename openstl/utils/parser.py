@@ -105,7 +105,7 @@ def create_parser():
 
     # lightning
     parser.add_argument('--gpus', nargs='+', default=[0], type=int)
-    parser.add_argument('--metric_for_bestckpt', default='val_loss', type=str)
+    parser.add_argument('--metric_for_bestckpt', default='val/loss', type=str)
     parser.add_argument('--ckpt_path', default=None, type=str)
     parser.add_argument('--metric_threshold', default=None, type=float,
                         help='Threshold for detection metrics (POD, FAR, CSI). '
@@ -176,6 +176,6 @@ def default_parser():
         'filter_bias_and_bn': False,
         # Lightning parameters
         'gpus': [0],
-        'metric_for_bestckpt': 'val_loss'
+        'metric_for_bestckpt': 'val/loss'
     }
     return default_values

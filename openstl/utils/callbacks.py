@@ -68,11 +68,11 @@ class SetupCallback(Callback):
 
 class EpochEndCallback(Callback):
     def on_train_epoch_end(self, trainer, pl_module, outputs=None):
-        self.avg_train_loss = trainer.callback_metrics.get('train_loss')
+        self.avg_train_loss = trainer.callback_metrics.get('train/loss')
 
     def on_validation_epoch_end(self, trainer, pl_module):
         lr = trainer.optimizers[0].param_groups[0]['lr']
-        avg_val_loss = trainer.callback_metrics.get('val_loss')
+        avg_val_loss = trainer.callback_metrics.get('val/loss')
 
         if hasattr(self, 'avg_train_loss'):
             print_log(f"Epoch {trainer.current_epoch}: Lr: {lr:.7f} | Train Loss: {self.avg_train_loss:.7f} | Vali Loss: {avg_val_loss:.7f}")

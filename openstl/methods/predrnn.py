@@ -63,5 +63,5 @@ class PredRNN(Base_method):
                 self.eta, self.global_step, ims.shape[0], self.hparams)
             
         img_gen, loss = self.model(ims, real_input_flag)
-        self.log('train_loss', loss, on_step=True, on_epoch=True, prog_bar=True)
+        self.log('train/loss', loss, on_step=True, on_epoch=True, prog_bar=True)
         return loss

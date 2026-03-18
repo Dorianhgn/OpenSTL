@@ -55,8 +55,8 @@ use_rope = True # no RoPE for JvM
 # ==============================================================================
 # Training Configuration
 # ==============================================================================
-lr = 1e-3
-batch_size = 16
+lr = 2e-4
+batch_size = 64
 drop_path = 0.02
 sched = 'cosine'
 warmup_epoch = 0
@@ -64,8 +64,15 @@ warmup_epoch = 0
 # Gradient checkpointing (saves memory, slightly slower)
 gradient_checkpointing = True
 
-epoch=50
+epoch=100
 
 fp16 = True
 opt = 'adamw'
 weight_decay = 1.0e-4
+
+# ==============================================================================
+# Testing Configuration
+# ==============================================================================
+test_num_ensemble=5
+metric_threshold=128
+metrics = ['crps', 'mse', 'mae', 'ssim', 'psnr', 'lpips', 'pod', 'far', 'csi']

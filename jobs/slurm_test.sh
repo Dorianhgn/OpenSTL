@@ -25,6 +25,7 @@ WORKSPACE_DIR="$HOME/OpenSTL"
 export DATASET="mmnist"                                    # Dataset name (e.g., mmnist, etc.)
 export CONFIG_FILE="work_dirs/mmnist_jvm_ens_5/config_base.py"
 export EXPERIMENT_NAME="mmnist_jvm_ens_5"
+export CKPT_PATH="work_dirs/mmnist_jvm/checkpoints/best.ckpt"
 
 # Créer le répertoire de logs s'il n'existe pas
 mkdir -p logs

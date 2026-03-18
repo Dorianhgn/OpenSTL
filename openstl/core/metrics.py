@@ -152,23 +152,47 @@ class LPIPS(torch.nn.Module):
     def __init__(self, net='alex', use_gpu=True):
         super().__init__()
         assert net in ['alex', 'squeeze', 'vgg']
+        if lpips is None:
+            raise ImportError('lpips is required to compute LPIPS metrics.')
         self.use_gpu = use_gpu and torch.cuda.is_available()
-        self.loss_fn = lpips.LPIPS(net=net)
-        if use_gpu:
-            self.loss_fn.cuda()
+        self.device = torch.device('cuda' if self.use_gpu else 'cpu')
+        self.loss_fn = lpips.LPIPS(net=net).to(self.device)
+        self.loss_fn.eval()
 
-    def forward(self, img1, img2):
-        # Load images, which are min-max norm to [0, 1]
-        img1 = lpips.im2tensor(img1 * 255)  # RGB image from [-1,1]
-        img2 = lpips.im2tensor(img2 * 255)
-        if self.use_gpu:
-            img1, img2 = img1.cuda(), img2.cuda()
-        return self.loss_fn.forward(img1, img2).squeeze().detach().cpu().numpy()
+    def _to_tensor(self, images):
+        if images.ndim != 4:
+            raise ValueError(f'Expected LPIPS inputs with 4 dimensions, got shape {images.shape}.')
+
+        tensor = torch.from_numpy(np.ascontiguousarray(images)).float()
+        if tensor.shape[-1] in {1, 2, 3}:
+            tensor = tensor.permute(0, 3, 1, 2)
+        elif tensor.shape[1] not in {1, 2, 3}:
+            raise ValueError(f'Unable to infer channel dimension for LPIPS input shape {images.shape}.')
+
+        if tensor.shape[1] == 1:
+            tensor = tensor.repeat(1, 3, 1, 1)
+        elif tensor.shape[1] == 2:
+            tensor = torch.cat([tensor, tensor[:, :1]], dim=1)
+        elif tensor.shape[1] > 3:
+            tensor = tensor[:, :3]
+
+        return tensor.clamp(0, 1).mul(2).sub(1).to(self.device)
+
+    def forward(self, img1, img2, batch_size=32):
+        img1 = self._to_tensor(img1)
+        img2 = self._to_tensor(img2)
+        scores = []
+        with torch.no_grad():
+            for start in range(0, img1.shape[0], batch_size):
+                end = start + batch_size
+                batch_scores = self.loss_fn.forward(img1[start:end], img2[start:end])
+                scores.append(batch_scores.reshape(-1))
+        return torch.cat(scores).mean().item()
 
 
 def metric(pred, true, mean=None, std=None, metrics=['mae', 'mse'],
            clip_range=[0, 1], channel_names=None,
-           spatial_norm=False, return_log=True, threshold=74.0):
+           spatial_norm=False, return_log=True, threshold=None):
     """The evaluation function to output metrics.
 
     Args:
@@ -190,7 +214,7 @@ def metric(pred, true, mean=None, std=None, metrics=['mae', 'mse'],
         true = true * std + mean
     eval_res = {}
     eval_log = ""
-    allowed_metrics = ['mae', 'mse', 'rmse', 'ssim', 'psnr', 'snr', 'lpips', 'pod', 'sucr', 'csi']
+    allowed_metrics = ['mae', 'mse', 'rmse', 'ssim', 'psnr', 'snr', 'lpips', 'pod', 'sucr', 'csi', 'far']
     invalid_metrics = set(metrics) - set(allowed_metrics)
     if len(invalid_metrics) != 0:
         raise ValueError(f'metric {invalid_metrics} is not supported.')
@@ -234,14 +258,18 @@ def metric(pred, true, mean=None, std=None, metrics=['mae', 'mse'],
                 rmse_sum += eval_res[f'rmse_{str(c_name)}']
             eval_res['rmse'] = rmse_sum / c_group
 
-    if 'pod' in metrics:
+    detection_metrics = {'pod', 'sucr', 'csi', 'far'}
+    if threshold is not None and detection_metrics.intersection(metrics):
         hits, fas, misses = sevir_metrics(pred, true, threshold)
         eval_res['pod'] = POD(hits, misses)
         eval_res['sucr'] = SUCR(hits, fas)
-        eval_res['csi'] = CSI(hits, fas, misses) 
+        eval_res['csi'] = CSI(hits, fas, misses)
+        eval_res['far'] = 1.0 - eval_res['sucr']
         
     pred = np.maximum(pred, clip_range[0])
     pred = np.minimum(pred, clip_range[1])
+    true = np.maximum(true, clip_range[0])
+    true = np.minimum(true, clip_range[1])
     if 'ssim' in metrics:
         ssim = 0
         for b in range(pred.shape[0]):
@@ -265,14 +293,10 @@ def metric(pred, true, mean=None, std=None, metrics=['mae', 'mse'],
         eval_res['snr'] = snr / (pred.shape[0] * pred.shape[1])
 
     if 'lpips' in metrics:
-        lpips = 0
-        cal_lpips = LPIPS(net='alex', use_gpu=False)
-        pred = pred.transpose(0, 1, 3, 4, 2)
-        true = true.transpose(0, 1, 3, 4, 2)
-        for b in range(pred.shape[0]):
-            for f in range(pred.shape[1]):
-                lpips += cal_lpips(pred[b, f], true[b, f])
-        eval_res['lpips'] = lpips / (pred.shape[0] * pred.shape[1])
+        cal_lpips = LPIPS(net='alex', use_gpu=True)
+        pred_lpips = pred.transpose(0, 1, 3, 4, 2).reshape(-1, pred.shape[3], pred.shape[4], pred.shape[2])
+        true_lpips = true.transpose(0, 1, 3, 4, 2).reshape(-1, true.shape[3], true.shape[4], true.shape[2])
+        eval_res['lpips'] = cal_lpips(pred_lpips, true_lpips)
 
     if return_log:
         for k, v in eval_res.items():
@@ -351,7 +375,8 @@ def per_frame_metric(pred, true, mean=None, std=None, metrics=['mae', 'mse', 'ss
         results['rmse_std'] = stds
 
     # --- Detection metrics per frame (no per-sample std, aggregated over spatial) ---
-    if threshold is not None and 'pod' in metrics:
+    detection_metrics = {'pod', 'sucr', 'csi', 'far'}
+    if threshold is not None and detection_metrics.intersection(metrics):
         pod_vals, sucr_vals, csi_vals, far_vals = (np.zeros(T) for _ in range(4))
         for t in range(T):
             hits_t, fas_t, misses_t = sevir_metrics(

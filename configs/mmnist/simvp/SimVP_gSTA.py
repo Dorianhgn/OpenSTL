@@ -9,13 +9,17 @@ N_T = 8
 N_S = 4
 # training
 lr = 1e-3
-batch_size = 16
+batch_size = 64
 drop_path = 0.02
 sched = 'cosine'
 warmup_epoch = 0
 
-epoch=50
+epoch=100
 
 fp16 = True
 opt = 'adamw'
 weight_decay = 1.0e-4
+
+# testing
+metric_threshold=128
+metrics = ['mse', 'mae', 'ssim', 'psnr', 'lpips', 'pod', 'far', 'csi']

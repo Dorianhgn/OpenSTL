@@ -8,7 +8,7 @@
 #SBATCH --time=7-00:00:00                  # Wall time limit (D-HH:MM:SS)
 #SBATCH --nodes=1                          # Number of nodes
 #SBATCH --ntasks-per-node=1                # Number of tasks per node
-#SBATCH --gpus-per-node=L4:1               # 1 GPU only
+#SBATCH --gpus-per-node=1                  # 1 GPU only
 #SBATCH --cpus-per-task=6                  # CPUs for data loading
 #SBATCH --mem-per-gpu=96G                  # Total memory for the job
 #SBATCH --output=logs/job_%j_%x.out        # Standard output file
@@ -23,7 +23,7 @@ echo "Submitting batch job $SLURM_JOB_ID in container..."
 CONTAINER_IMAGE="docker://dorianhgn/openstl-mamba:latest"
 CONTAINER_NAME="container_${SLURM_JOB_ID}"
 export DATASET="mmnist"
-export EXP_JSON_FILE="configs/mmnist/exp.json"
+export EXP_JSON_FILE="configs/mmnist/mini-exp.json"
 
 mkdir -p logs
 

@@ -19,7 +19,7 @@ class WaST(SimVP):
         pred_y = self(batch_x)
         loss = self.criterion(pred_y, batch_y)
         loss = loss + self.hffl(pred_y, batch_y, reshape=True) if self.hffl is not None else loss
-        self.log('train_loss', loss, on_step=True, on_epoch=True, prog_bar=True)
+        self.log('train/loss', loss, on_step=True, on_epoch=True, prog_bar=True)
 
         if hasattr(self, 'drop_scheduler'):
             steps = self.current_epoch * self.steps_per_epoch + batch_idx

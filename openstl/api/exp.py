@@ -71,7 +71,7 @@ class BaseExperiment(object):
 
         ckpt_callback = BestCheckpointCallback(
             monitor=args.metric_for_bestckpt,
-            filename='best-{epoch:02d}-{val_loss:.3f}',
+            filename='best-{epoch:02d}-{val/loss:.3f}',
             mode='min',
             save_last=True,
             dirpath=ckpt_dir,
@@ -101,10 +101,17 @@ class BaseExperiment(object):
         self.trainer.fit(self.method, self.data, ckpt_path=self.args.ckpt_path if self.args.ckpt_path else None)
 
     def test(self):
-        if self.args.test == True:
-            ckpt = torch.load(osp.join(self.save_dir, 'checkpoints', 'best.ckpt'))
-            self.method.load_state_dict(ckpt['state_dict'])
-        self.trainer.test(self.method, self.data)
+        ckpt_path = self.args.ckpt_path
+        if ckpt_path is None and self.args.test == True:
+            # Fallback to default best.ckpt if testing in the current directory
+            ckpt_path = osp.join(self.save_dir, 'checkpoints', 'best.ckpt')
+            
+        if ckpt_path is not None and osp.exists(ckpt_path):
+            print(f"Loading checkpoint from {ckpt_path}")
+            self.trainer.test(self.method, self.data, ckpt_path=ckpt_path)
+        else:
+            print(f"No valid checkpoint found. Testing with current weights.")
+            self.trainer.test(self.method, self.data)
     
     def display_method_info(self, args):
         """Plot the basic infomation of supported methods"""
