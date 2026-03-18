@@ -787,6 +787,29 @@ class SPADEJvM_Model(nn.Module):
             out_channels=in_channels,
             patch_size=self.patch_size,
         )
+
+    def _pad_time_to_patch_multiple(self, x: torch.Tensor) -> tuple[torch.Tensor, int]:
+        """
+        Pad the temporal dimension so it becomes divisible by the temporal patch size.
+
+        Returns:
+            padded_x: Tensor with temporal length divisible by patch_size[0]
+            original_t: Original temporal length before padding
+        """
+        pt = self.patch_size[0]
+        original_t = x.shape[1]
+        pad_t = (-original_t) % pt
+        if pad_t == 0:
+            return x, original_t
+
+        pad_frame = torch.zeros_like(x[:, -1:, ...])
+        pad = pad_frame.repeat(1, pad_t, 1, 1, 1)
+        x = torch.cat([x, pad], dim=1)
+        return x, original_t
+
+    def _crop_time(self, x: torch.Tensor, t: int) -> torch.Tensor:
+        """Crop the temporal dimension back to length t."""
+        return x[:, :t, ...]
     
     def forward(
         self,
@@ -827,6 +850,10 @@ class SPADEJvM_Model(nn.Module):
             x_input = torch.cat([x_past, x_t], dim=1)  # (B, T_in + T_out, C, H, W)
         else:
             x_input = x_t
+
+        # Pad temporal length to a multiple of the temporal patch size.
+        # This is important for SEVIR, where 13 past + 12 future = 25 frames.
+        x_input, original_t = self._pad_time_to_patch_multiple(x_input)
         
         # Patch embedding
         x, grid_size = self.patch_embed(x_input)
@@ -840,6 +867,9 @@ class SPADEJvM_Model(nn.Module):
         
         # Unpatchify to output
         x_pred = self.unpatchify(x, t_emb, grid_size)
+
+        # Remove any temporal padding that was added before patch embedding.
+        x_pred = self._crop_time(x_pred, original_t)
         
         # Extract only the future portion if past was concatenated
         if x_past is not None:
