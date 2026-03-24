@@ -21,8 +21,7 @@ cfg_dropout_prob = 0.1  # 10% chance to drop condition during training
 guidance_scale = 1.0  # No guidance during training (will be overridden at test time)
 
 # model parameters
-
-block_type = 'attention'  # Ablation: Change to 'mamba', 'attention' or 'conv'
+block_type = 'mamba'  # Ablation: Change to 'mamba', 'attention' or 'conv'
 
 # Model dimensions
 model_dim = 256  # Hidden dimension
@@ -45,12 +44,30 @@ expand = 2
 # Attention-specific 
 num_heads = 8
 
-# Conditionning : None with mmnist
-use_spade = False
-use_encoder = False 
+# Conditioning: label injection benchmark
+use_spade = True
+use_encoder = False
+use_label_conditioner = True
+label_conditioner_type = 'LabelConditioner'
+label_conditioner_params = {
+    'hidden_dim': 64,
+    'spatial_size': 16,
+    'base_size': 4,
+    'dropout': 0.0,
+}
+num_classes = 10
+return_labels = True
+
+# AdaLN alternative (global label -> time embedding, no spatial SPADE map):
+# use_label_conditioner = True
+# label_conditioner_type = 'AdaLN'
+# label_conditioner_params = {
+#     'label_dim': 128,
+# }
+# use_spade = False
 
 # Positional Encoding
-use_rope = True # no RoPE for JvM
+use_rope = False # no RoPE for JvM
 
 # ==============================================================================
 # Training Configuration
@@ -71,6 +88,12 @@ epoch=100
 fp16 = True
 opt = 'adamw'
 weight_decay = 1.0e-4
+
+# ==============================================================================
+# Fast dev smoke test
+# ==============================================================================
+fast_dev_run = 1
+limit_test_batches = 1
 
 # ==============================================================================
 # Testing Configuration

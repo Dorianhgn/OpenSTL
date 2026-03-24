@@ -60,6 +60,8 @@ batch_size = 64
 drop_path = 0.02
 sched = 'cosine'
 warmup_epoch = 0
+clip_grad = 1.0
+clip_mode = 'norm'
 
 # Gradient checkpointing (saves memory, slightly slower)
 gradient_checkpointing = True

@@ -126,7 +126,7 @@ class PatchEmbedBottleneck(nn.Module):
             nn.Linear(bottleneck_dim, embed_dim),
         )
         
-        self.norm = nn.LayerNorm(embed_dim, eps=1e-6)
+        self.norm = nn.RMSNorm(embed_dim, eps=1e-6)
     
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, Tuple[int, int, int]]:
         """
@@ -189,7 +189,7 @@ class LinearUnpatchify(nn.Module):
         patch_vol = patch_size[0] * patch_size[1] * patch_size[2]
         output_dim = out_channels * patch_vol
         
-        self.norm = nn.LayerNorm(model_dim, eps=1e-6)
+        self.norm = nn.RMSNorm(model_dim, eps=1e-6)
         self.modulation = nn.Sequential(
             nn.SiLU(),
             nn.Linear(time_dim, 2 * model_dim),
@@ -259,7 +259,7 @@ class VideoAdaLN(nn.Module):
     
     def __init__(self, time_dim: int, channels: int):
         super().__init__()
-        self.norm = nn.LayerNorm(channels, elementwise_affine=False, eps=1e-6)
+        self.norm = nn.RMSNorm(channels, elementwise_affine=False, eps=1e-6)
         self.emb = nn.Sequential(nn.SiLU(), nn.Linear(time_dim, 2 * channels))
     
     def forward(self, x: torch.Tensor, t_emb: torch.Tensor) -> torch.Tensor:
@@ -303,7 +303,7 @@ class SPADENorm(nn.Module):
         super().__init__()
         self.norm_channels = norm_channels
         
-        self.norm = nn.LayerNorm(norm_channels, elementwise_affine=False, eps=1e-6)
+        self.norm = nn.RMSNorm(norm_channels, elementwise_affine=False, eps=1e-6)
         
         padding = kernel_size // 2
         self.spade_net = nn.Sequential(
@@ -349,7 +349,7 @@ class SPADENorm(nn.Module):
         spade_params = self.spade_net(cond)
         gamma, beta = spade_params.chunk(2, dim=1)
         
-        out = gamma * x_norm + beta
+        out = x_norm * (1 + gamma) + beta   # Formule pour démarrer l'entraînement en identité
         
         if is_video:
             out = rearrange(out, "(b t) c h w -> b t c h w", b=B, t=T)
@@ -368,7 +368,7 @@ class SPADEAdaLNModulation(nn.Module):
             nn.SiLU(),
             nn.Linear(time_dim, 2 * channels),
         )
-        nn.init.normal_(self.time_mlp[-1].weight, mean=0.0, std=0.01)
+        nn.init.zeros_(self.time_mlp[-1].weight)
         nn.init.zeros_(self.time_mlp[-1].bias)
     
     def forward(self, x: torch.Tensor, cond: torch.Tensor, t_emb: torch.Tensor) -> torch.Tensor:
@@ -817,6 +817,7 @@ class SPADEJvM_Model(nn.Module):
         t: torch.Tensor,
         cond_spatial: Optional[torch.Tensor] = None,
         x_past: Optional[torch.Tensor] = None,
+        label_emb: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
         Forward pass for Flow Matching.
@@ -829,6 +830,7 @@ class SPADEJvM_Model(nn.Module):
             x_past: Clean past frames (B, T_in, C, H, W), optional.
                     - If use_spade=True: concatenated with x_t on time dim
                     - If use_spade=False: concatenated before x_t (TODO: [cond, x_past, x_t])
+                label_emb: Optional global label embedding (B, time_dim) added to time embedding.
             
         Returns:
             Predicted clean image (B, T_out, C, H, W)
@@ -837,6 +839,8 @@ class SPADEJvM_Model(nn.Module):
         
         # Time embedding
         t_emb = self.time_emb(t)
+        if label_emb is not None:
+            t_emb = t_emb + label_emb
         
         # Validate SPADE condition
         if self.use_spade and cond_spatial is None:
@@ -886,7 +890,7 @@ class SPADEJvM_Model(nn.Module):
         x_past: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Alias for forward() - compatibility with JvM interface."""
-        return self.forward(x_t, t, cond=cond, x_past=x_past)
+        return self.forward(x_t, t, cond_spatial=cond, x_past=x_past)
     
     def compute_v_from_x_pred(
         self,

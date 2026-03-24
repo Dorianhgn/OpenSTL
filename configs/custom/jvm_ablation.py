@@ -126,7 +126,9 @@ cond_channels = 10
 use_label_conditioner = False
 label_conditioner_type = 'LabelConditioner'
 label_conditioner_params = {
-    'hidden_dim': 32,
+    'hidden_dim': 64,
+    'spatial_size': 16,
+    'base_size': 4,
     'dropout': 0.0,
 }
 num_classes = 10

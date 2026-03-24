@@ -9,6 +9,7 @@ suitable for conditioning models like SPADEJvM.
 
 Available encoders:
 - ContextNet: Simple CNN encoder with residual blocks
+- LabelConditioner: Lightweight spatial decoder for class / multi-hot labels
 - More to come...
 """
 
@@ -145,22 +146,34 @@ class LabelConditioner(nn.Module):
         num_classes: int = 10,
         out_channels: int = 64,
         hidden_dim: int = 64,
+        spatial_size: int = 16,
+        base_size: int = 4,
         dropout: float = 0.0,
     ):
         super().__init__()
         self.num_classes = num_classes
+        self.out_channels = out_channels
+        self.spatial_size = spatial_size
+        self.base_size = base_size
 
-        layers = [
+        self.label_proj = nn.Sequential(
             nn.Linear(num_classes, hidden_dim),
             nn.SiLU(),
-        ]
-        if dropout > 0:
-            layers.append(nn.Dropout(dropout))
-        layers.extend([
-            nn.Linear(hidden_dim, out_channels),
+            nn.Dropout(dropout) if dropout > 0 else nn.Identity(),
+            nn.Linear(hidden_dim, hidden_dim * base_size * base_size),
             nn.SiLU(),
-        ])
-        self.proj = nn.Sequential(*layers)
+        )
+
+        self.decoder = nn.Sequential(
+            nn.ConvTranspose2d(hidden_dim, hidden_dim, kernel_size=4, stride=2, padding=1),
+            nn.SiLU(),
+            nn.ConvTranspose2d(hidden_dim, hidden_dim, kernel_size=4, stride=2, padding=1),
+            nn.SiLU(),
+            nn.Conv2d(hidden_dim, out_channels, kernel_size=3, padding=1),
+        )
+
+        nn.init.normal_(self.decoder[-1].weight, mean=0.0, std=0.01)
+        nn.init.zeros_(self.decoder[-1].bias)
 
     def forward(self, labels):
         """
@@ -173,8 +186,14 @@ class LabelConditioner(nn.Module):
         if labels.ndim == 1:
             labels = F.one_hot(labels.long(), num_classes=self.num_classes)
         labels = labels.float()
-        cond = self.proj(labels)
-        return cond.unsqueeze(-1).unsqueeze(-1)
+        cond = self.label_proj(labels)
+        cond = cond.view(labels.shape[0], -1, self.base_size, self.base_size)
+        cond = self.decoder(cond)
+
+        if cond.shape[-1] != self.spatial_size or cond.shape[-2] != self.spatial_size:
+            cond = F.interpolate(cond, size=(self.spatial_size, self.spatial_size), mode='bilinear', align_corners=False)
+
+        return cond
 
 
 # Registry for context encoders
@@ -183,6 +202,7 @@ CONTEXT_ENCODER_REGISTRY = {
     'ContextNet': ContextNet,
     'labelconditioner': LabelConditioner,
     'LabelConditioner': LabelConditioner,
+    'SpatialLabelConditioner': LabelConditioner,
 }
 
 

@@ -21,6 +21,7 @@ cfg_dropout_prob = 0.1  # 10% chance to drop condition during training
 guidance_scale = 1.0  # No guidance during training (will be overridden at test time)
 
 # model parameters
+
 block_type = 'mamba'  # Ablation: Change to 'mamba', 'attention' or 'conv'
 
 # Model dimensions
@@ -44,14 +45,13 @@ expand = 2
 # Attention-specific 
 num_heads = 8
 
-# Conditioning: label injection benchmark
-use_spade = True
+# AdaLN label conditioning (global label -> time embedding, no spatial SPADE map)
+use_spade = False
 use_encoder = False
 use_label_conditioner = True
-label_conditioner_type = 'LabelConditioner'
+label_conditioner_type = 'AdaLN'
 label_conditioner_params = {
-    'hidden_dim': 32,
-    'dropout': 0.0,
+	'label_dim': 128,
 }
 num_classes = 10
 return_labels = True
@@ -80,14 +80,8 @@ opt = 'adamw'
 weight_decay = 1.0e-4
 
 # ==============================================================================
-# Fast dev smoke test
-# ==============================================================================
-fast_dev_run = 1
-limit_test_batches = 1
-
-# ==============================================================================
 # Testing Configuration
 # ==============================================================================
 test_num_ensemble=5
-metric_threshold=0.8
+metric_threshold=0.7
 metrics = ['crps', 'mse', 'mae', 'ssim', 'psnr', 'lpips', 'pod', 'far', 'csi']

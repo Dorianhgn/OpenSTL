@@ -23,6 +23,7 @@ Supports:
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import os.path as osp
 from typing import Literal, Optional
 
@@ -148,6 +149,10 @@ class FlowMatching(Base_method):
         self._label_conditioner_type = label_conditioner_type
         self._label_conditioner_params = label_conditioner_params or {}
         self._num_classes = num_classes
+        self._use_adaln_label_conditioning = (
+            self._use_label_conditioner and str(self._label_conditioner_type).lower() == 'adaln'
+        )
+        self._use_spatial_label_conditioner = self._use_label_conditioner and not self._use_adaln_label_conditioning
         self._test_num_ensemble = test_num_ensemble
         self._metric_threshold = metric_threshold
         
@@ -202,17 +207,38 @@ class FlowMatching(Base_method):
 
         # Label Conditioner (optional, used for label-injection benchmarks)
         self.label_conditioner = None
-        if self._use_label_conditioner:
+        if self._use_spatial_label_conditioner:
             label_out_channels = args.get('cond_channels', 10)
+            label_params = dict(self._label_conditioner_params)
+            label_params.setdefault('spatial_size', args.get('label_conditioner_spatial_size', 16))
+            label_params.setdefault('base_size', args.get('label_conditioner_base_size', 4))
             self.label_conditioner = build_context_encoder(
                 encoder_type=self._label_conditioner_type,
                 num_classes=self._num_classes,
                 out_channels=label_out_channels,
-                **self._label_conditioner_params,
+                **label_params,
             )
             print(
                 f"Initialized {self._label_conditioner_type} label conditioner "
-                f"for {self._num_classes} classes with params: {self._label_conditioner_params}"
+                f"for {self._num_classes} classes with params: {label_params}"
+            )
+
+        # AdaLN-style global label embedding (optional)
+        self.label_embedding = None
+        self.label_mlp = None
+        if self._use_adaln_label_conditioning:
+            label_params = dict(self._label_conditioner_params)
+            label_dim = int(label_params.get('label_dim', 128))
+            time_dim = args.get('time_dim', 512)
+            self.label_embedding = nn.Embedding(self._num_classes, label_dim)
+            self.label_mlp = nn.Sequential(
+                nn.Linear(label_dim, label_dim),
+                nn.SiLU(),
+                nn.Linear(label_dim, time_dim),
+            )
+            print(
+                f"Initialized AdaLN label conditioner for {self._num_classes} classes "
+                f"with label_dim={label_dim}, time_dim={time_dim}"
             )
         
         # Time endpoint for sampling
@@ -239,6 +265,11 @@ class FlowMatching(Base_method):
         aft_seq_length = args.get('aft_seq_length', 10)
         in_shape = args.get('in_shape', (pre_seq_length, 1, 64, 64))
         
+        use_spade = args.get('use_spade', True) or self._use_spatial_label_conditioner
+        if self._use_adaln_label_conditioning:
+            # AdaLN label conditioning is injected via time embedding, no spatial SPADE map.
+            use_spade = False
+
         # Model configuration
         model_config = {
             'in_shape': in_shape,
@@ -252,7 +283,7 @@ class FlowMatching(Base_method):
             'pre_seq_length': pre_seq_length,
             'aft_seq_length': aft_seq_length,
             'block_type': args.get('block_type', 'mamba'),
-            'use_spade': args.get('use_spade', True) or self._use_label_conditioner,
+            'use_spade': use_spade,
             'use_rope': args.get('use_rope', True),
             'd_state': args.get('d_state', 64),
             'd_conv': args.get('d_conv', 4),
@@ -263,6 +294,30 @@ class FlowMatching(Base_method):
         }
         
         return SPADEJvM_Model(**model_config)
+
+    def _labels_to_one_hot(self, labels: torch.Tensor) -> torch.Tensor:
+        """Convert integer or multi-hot labels to float one-hot/multi-hot vectors."""
+        if labels.ndim == 1:
+            labels = F.one_hot(labels.long(), num_classes=self._num_classes)
+        elif labels.ndim != 2:
+            raise ValueError(f"Unsupported labels shape for AdaLN: {tuple(labels.shape)}")
+        if labels.shape[-1] != self._num_classes:
+            raise ValueError(
+                f"Expected labels last dim={self._num_classes}, got {labels.shape[-1]}"
+            )
+        return labels.float()
+
+    def _get_label_emb(self, batch_labels: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
+        """Build global label embedding (B, time_dim) for AdaLN conditioning."""
+        if not self._use_adaln_label_conditioning or self.label_embedding is None or self.label_mlp is None:
+            return None
+        if batch_labels is None:
+            return None
+
+        labels = batch_labels.to(device=self.label_embedding.weight.device)
+        labels = self._labels_to_one_hot(labels)
+        label_feat = labels @ self.label_embedding.weight
+        return self.label_mlp(label_feat)
     
     def forward(self, batch_x, batch_y=None, **kwargs):
         """
@@ -300,16 +355,19 @@ class FlowMatching(Base_method):
             apply_cond_dropout: Whether to apply CFG dropout
             
         Returns:
-            Dict with keys: x_t, t, x_past, cond_spatial
+            Dict with keys: x_t, t, x_past, cond_spatial, label_emb
         """
         B = x_t.shape[0]
         device = x_t.device
         
         x_past = batch_x
         cond_spatial = None
+        label_emb = self._get_label_emb(batch_labels)
         
         # Prepare SPADE condition if use_spade=True
-        use_spade = self.hparams.get('use_spade', True) or self._use_label_conditioner
+        use_spade = self.hparams.get('use_spade', True) or self._use_spatial_label_conditioner
+        if self._use_adaln_label_conditioning:
+            use_spade = False
         if use_spade:
             if batch_labels is not None and self.label_conditioner is not None:
                 cond_spatial = self.label_conditioner(batch_labels)
@@ -329,18 +387,28 @@ class FlowMatching(Base_method):
             x_past = x_past * (~drop_mask).view(B, 1, 1, 1, 1).float()
             if cond_spatial is not None:
                 cond_spatial = cond_spatial * (~drop_mask).view(B, 1, 1, 1).float()
+            if label_emb is not None:
+                label_emb = label_emb * (~drop_mask).view(B, 1).float()
         
-        return {"x_t": x_t, "t": t, "x_past": x_past, "cond_spatial": cond_spatial}
+        return {
+            "x_t": x_t,
+            "t": t,
+            "x_past": x_past,
+            "cond_spatial": cond_spatial,
+            "label_emb": label_emb,
+        }
     
-    def _call_model(self, x_t, t, x_past=None, cond_spatial=None):
+    def _call_model(self, x_t, t, x_past=None, cond_spatial=None, label_emb=None):
         """Call model with the correct signature (x_t, t, cond_spatial, x_past)."""
-        return self.model(x_t, t, cond_spatial=cond_spatial, x_past=x_past)
+        return self.model(x_t, t, cond_spatial=cond_spatial, x_past=x_past, label_emb=label_emb)
     
     def _call_model_from_inputs(self, model_inputs):
         """Call model using prepared inputs dict from _prepare_model_inputs."""
         return self._call_model(
             model_inputs["x_t"], model_inputs["t"],
-            x_past=model_inputs["x_past"], cond_spatial=model_inputs["cond_spatial"]
+            x_past=model_inputs["x_past"],
+            cond_spatial=model_inputs["cond_spatial"],
+            label_emb=model_inputs.get("label_emb", None),
         )
     
     def training_step(self, batch, batch_idx):
@@ -623,7 +691,9 @@ class FlowMatching(Base_method):
         
         # Prepare SPADE condition if not provided
         if cond_spatial is None:
-            use_spade = self.hparams.get('use_spade', True) or self._use_label_conditioner
+            use_spade = self.hparams.get('use_spade', True) or self._use_spatial_label_conditioner
+            if self._use_adaln_label_conditioning:
+                use_spade = False
             if use_spade:
                 if labels is not None and self.label_conditioner is not None:
                     cond_spatial = self.label_conditioner(labels)
@@ -636,6 +706,8 @@ class FlowMatching(Base_method):
         
         # Convert to FP32
         cond_spatial_fp32 = cond_spatial.to(dtype=torch.float32) if cond_spatial is not None else None
+        label_emb = self._get_label_emb(labels)
+        label_emb_fp32 = label_emb.to(dtype=torch.float32) if label_emb is not None else None
         
         # ODE function
         def ode_func(t_scalar, x):
@@ -644,12 +716,30 @@ class FlowMatching(Base_method):
             
             # Conditional prediction
             if self._prediction_mode == "x":
-                x_pred = self._call_model(x, t_batch, x_past=x_past_fp32, cond_spatial=cond_spatial_fp32)
+                x_pred = self._call_model(
+                    x,
+                    t_batch,
+                    x_past=x_past_fp32,
+                    cond_spatial=cond_spatial_fp32,
+                    label_emb=label_emb_fp32,
+                )
                 v_cond = self.model.compute_v_from_x_pred(x_pred, x, t_batch)
             elif self._prediction_mode == "v":
-                v_cond = self._call_model(x, t_batch, x_past=x_past_fp32, cond_spatial=cond_spatial_fp32)
+                v_cond = self._call_model(
+                    x,
+                    t_batch,
+                    x_past=x_past_fp32,
+                    cond_spatial=cond_spatial_fp32,
+                    label_emb=label_emb_fp32,
+                )
             else:  # epsilon
-                eps_pred = self._call_model(x, t_batch, x_past=x_past_fp32, cond_spatial=cond_spatial_fp32)
+                eps_pred = self._call_model(
+                    x,
+                    t_batch,
+                    x_past=x_past_fp32,
+                    cond_spatial=cond_spatial_fp32,
+                    label_emb=label_emb_fp32,
+                )
                 t_view = t_batch.view(B, 1, 1, 1, 1)
                 x_pred = (x - (1 - t_view) * eps_pred) / t_view.clamp(min=1e-5)
                 v_cond = self.model.compute_v_from_x_pred(x_pred, x, t_batch)
